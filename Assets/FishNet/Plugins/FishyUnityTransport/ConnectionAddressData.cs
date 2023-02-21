@@ -2,7 +2,7 @@ using System;
 using Unity.Networking.Transport;
 using UnityEngine;
 
-namespace FishyUnityTransport
+namespace FishNet.Transporting.FishyUnityTransport
 {
     /// <summary>
     /// Structure to store the address to connect to

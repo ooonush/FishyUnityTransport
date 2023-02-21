@@ -1,13 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
 using FishNet.Managing.Logging;
-using FishNet.Transporting;
+using FishNet.Transporting.FishyUnityTransport.BatchedQueue;
 using Unity.Collections;
 using Unity.Networking.Transport;
 using Unity.Networking.Transport.Error;
 using UnityEngine;
 
-namespace FishyUnityTransport
+namespace FishNet.Transporting.FishyUnityTransport
 {
     internal abstract class CommonSocket
     {

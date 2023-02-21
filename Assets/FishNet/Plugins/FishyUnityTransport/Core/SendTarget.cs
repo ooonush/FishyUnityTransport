@@ -1,7 +1,7 @@
 using System;
 using Unity.Networking.Transport;
 
-namespace FishyUnityTransport
+namespace FishNet.Transporting.FishyUnityTransport
 {
     public readonly struct SendTarget : IEquatable<SendTarget>
     {

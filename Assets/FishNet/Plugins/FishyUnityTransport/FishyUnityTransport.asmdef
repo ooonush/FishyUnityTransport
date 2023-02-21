@@ -1,6 +1,6 @@
 {
     "name": "FishyUnityTransport",
-    "rootNamespace": "FishyUnityTransport",
+    "rootNamespace": "FishNet.Transporting.FishyUnityTransport",
     "references": [
         "GUID:7c88a4a7926ee5145ad2dfa06f454c67",
         "GUID:e0cd26848372d4e5c891c569017e11f1",

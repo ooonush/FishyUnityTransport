@@ -1,12 +1,11 @@
 using System;
 using FishNet.Managing;
 using FishNet.Managing.Logging;
-using FishNet.Transporting;
 using Unity.Networking.Transport;
 using Unity.Networking.Transport.Relay;
 using UnityEngine;
 
-namespace FishyUnityTransport
+namespace FishNet.Transporting.FishyUnityTransport
 {
     [AddComponentMenu("FishNet/Transport/FishyUnityTransport")]
     public class FishyUnityTransport : Transport
