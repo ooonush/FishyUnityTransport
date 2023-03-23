@@ -1,54 +1,52 @@
 ﻿using System;
 using FishNet.Managing.Logging;
-using FishNet.Transporting;
-using Unity.Collections;
 using Unity.Networking.Transport;
 using Unity.Networking.Transport.Relay;
 using UnityEngine;
 
-namespace FishyUnityTransport
+namespace FishNet.Transporting.FishyUnityTransport
 {
+    [Serializable]
     internal class ServerSocket : CommonSocket
     {
-        #region Private
-        /// <summary>
-        /// Client connections to this server.
-        /// </summary>
-        private NativeList<NetworkConnection> _connections;
-        
         /// <summary>
         /// Maximum number of connections allowed.
         /// </summary>
-        private int _maximumClients = short.MaxValue;
-        #endregion
-        
+        [Range(1, 4095)]
+        public int MaximumClients = short.MaxValue; // TODO
+
+        #region Start And Stop Server
+
         /// <summary>
         /// Starts the server.
         /// </summary>
-        public bool StartConnection(int maximumClients)
+        public bool StartConnection()
         {
-            SetMaximumClients(maximumClients);
-            
-            if (Driver.IsCreated || GetLocalConnectionState() != LocalConnectionState.Stopped)
+            if (Driver.IsCreated || State != LocalConnectionState.Stopped)
             {
                 if (Transport.NetworkManager.CanLog(LoggingType.Error))
                     Debug.LogError("Attempting to start a server that is already active.");
                 return false;
             }
-            
-            SetLocalConnectionState(LocalConnectionState.Starting, true);
-            
-            bool succeeded = Transport.UseRelay 
-                ? StartRelayServer(ref Transport.RelayServerData, Transport.HeartbeatTimeoutMS) 
-                : ServerBindAndListen(Transport.ConnectionData.ListenEndPoint);
+
+            InitializeNetworkSettings();
+
+            SetLocalConnectionState(LocalConnectionState.Starting);
+
+            bool succeeded = Transport.ProtocolType switch
+            {
+                ProtocolType.UnityTransport => ServerBindAndListen(Transport.ConnectionData.ListenEndPoint),
+                ProtocolType.RelayUnityTransport => StartRelayServer(ref Transport.RelayServerData, Transport.HeartbeatTimeoutMS),
+                _ => false
+            };
 
             if (!succeeded && Driver.IsCreated)
             {
                 Driver.Dispose();
-                SetLocalConnectionState(LocalConnectionState.Stopped, true);
+                SetLocalConnectionState(LocalConnectionState.Stopped);
             }
-            
-            SetLocalConnectionState(LocalConnectionState.Started, true);
+
+            SetLocalConnectionState(LocalConnectionState.Started);
 
             return succeeded;
         }
@@ -63,21 +61,21 @@ namespace FishyUnityTransport
                 return false;
             }
 
-            _networkSettings.WithRelayParameters(ref relayServerData, heartbeatTimeoutMS);
+            NetworkSettings.WithRelayParameters(ref relayServerData, heartbeatTimeoutMS);
             return ServerBindAndListen(NetworkEndPoint.AnyIpv4);
         }
 
         private bool ServerBindAndListen(NetworkEndPoint endPoint)
         {
             InitDriver();
-            
+
             // Bind the driver to the endpoint
             Driver.Bind(endPoint);
             if (!Driver.Bound)
             {
                 if (Transport.NetworkManager.CanLog(LoggingType.Error))
                     Debug.LogError($"Unable to bind to the specified port {endPoint.Port}.");
-                
+
                 return false;
             }
 
@@ -92,204 +90,98 @@ namespace FishyUnityTransport
                 return false;
             }
 
-            // Finally, create a NativeList to hold all the connections
-            _connections = new NativeList<NetworkConnection>(16, Allocator.Persistent);
-            
             return true;
         }
-        
+
         /// <summary>
         /// Stops the server.
         /// </summary>
         public bool StopServer()
         {
-            LocalConnectionState state = GetLocalConnectionState();
-            if (state is LocalConnectionState.Stopped or LocalConnectionState.Stopping) return false;
-            
-            SetLocalConnectionState(LocalConnectionState.Stopping, true);
-            
-            foreach (var kvp in _sendQueue)
-            {
-                SendMessages(kvp.Key, kvp.Value);
-            }
+            SetLocalConnectionState(LocalConnectionState.Stopping);
 
-            if (_connections.IsCreated)
-            {
-                _connections.Dispose();
-            }
+            Shutdown();
 
-            Driver.ScheduleUpdate().Complete();
-            
-            if (Driver.IsCreated)
-            {
-                Driver.Dispose();
-            }
-            DisposeQueues();
-            
-            SetLocalConnectionState(LocalConnectionState.Stopped, true);
+            SetLocalConnectionState(LocalConnectionState.Stopped);
             return true;
         }
+
+        #endregion
 
         /// <summary>
         /// Stops a remote client from the server, disconnecting the client.
         /// </summary>
-        /// <param name="connection"></param>
-        private bool StopRemoteConnection(NetworkConnection connection)
+        /// <param name="clientId"></param>
+        public bool DisconnectRemoteClient(ulong clientId)
         {
-            if (GetLocalConnectionState() != LocalConnectionState.Started) return false;
+            if (State != LocalConnectionState.Started) return false;
 
-            Transport.HandleRemoteConnectionState(new RemoteConnectionStateArgs(RemoteConnectionState.Stopped, GetConnectionId(connection), Transport.Index));
-            
-            FlushSendQueuesForConnection(connection);
-            
-            _reliableReceiveQueue.Remove(GetConnectionId(connection));
-            ClearSendQueuesForConnection(connection);
+            FlushSendQueuesForClientId(clientId);
 
+            ReliableReceiveQueues.Remove(clientId);
+            ClearSendQueuesForClientId(clientId);
+
+            NetworkConnection connection = ParseClientId(clientId);
             if (Driver.GetConnectionState(connection) != NetworkConnection.State.Disconnected)
             {
                 Driver.Disconnect(connection);
             }
 
-            _connections.RemoveAt(_connections.IndexOf(connection));
-            
-            Driver.ScheduleUpdate().Complete();
-            
+            Transport.HandleRemoteConnectionState(RemoteConnectionState.Stopped, clientId, Transport.Index);
+
             return true;
         }
 
-        internal bool StopConnection(int connectionId)
+        protected override void HandleDisconnectEvent(ulong clientId)
         {
-            foreach (NetworkConnection connection in _connections)
+            Transport.HandleRemoteConnectionState(RemoteConnectionState.Stopped, clientId, Transport.Index);
+        }
+
+        public string GetConnectionAddress(ulong clientId)
+        {
+            NetworkConnection connection = ParseClientId(clientId);
+            return connection.GetState(Driver) == NetworkConnection.State.Disconnected
+                ? string.Empty
+                : Driver.RemoteEndPoint(connection).Address;
+        }
+
+        protected override void HandleIncomingConnection(NetworkConnection incomingConnection)
+        {
+            if (NetworkManager.ServerManager.Clients.Count >= MaximumClients)
             {
-                if (GetConnectionId(connection) == connectionId)
-                {
-                    return StopRemoteConnection(connection);
-                }
+                DisconnectRemoteClient(ParseClientId(incomingConnection));
+                return;
             }
 
-            return false;
+            Transport.HandleRemoteConnectionState(new RemoteConnectionStateArgs(RemoteConnectionState.Started, incomingConnection.GetHashCode(), Transport.Index));
         }
-
-        private bool TryGetConnection(int connectionId, out NetworkConnection connection)
-        {
-            if (_connections.IsCreated)
-            {
-                foreach (NetworkConnection c in _connections)
-                {
-                    if (GetConnectionId(c) == connectionId)
-                    {
-                        connection = c;
-                        return true;
-                    }
-                }
-            }
-
-            connection = default;
-            return false;
-        }
-
-        public string GetConnectionAddress(int connectionId)
-        {
-            if (!TryGetConnection(connectionId, out NetworkConnection connection)) return string.Empty;
-
-            NetworkEndPoint endpoint = Driver.RemoteEndPoint(connection);
-            return endpoint.Address;
-        }
-
+        
         /// <summary>
         /// Gets the current ConnectionState of a remote client on the server.
         /// </summary>
-        /// <param name="connectionId">ConnectionId to get ConnectionState for.</param>
-        internal RemoteConnectionState GetConnectionState(int connectionId)
+        /// <param name="clientId">ConnectionId to get ConnectionState for.</param>
+        public NetworkConnection.State GetConnectionState(ulong clientId)
         {
-            return !TryGetConnection(connectionId, out _) ? RemoteConnectionState.Stopped : RemoteConnectionState.Started;
+            return ParseClientId(clientId).GetState(Driver);
         }
 
-        /// <summary>
-        /// Returns the maximum number of clients allowed to connect to the server.
-        /// If the transport does not support this method the value -1 is returned.
-        /// </summary>
-        public int GetMaximumClients()
+        protected override void SetLocalConnectionState(LocalConnectionState state)
         {
-            return _maximumClients;
+            if (state == State) return;
+
+            State = state;
+
+            Transport.HandleServerConnectionState(new ServerConnectionStateArgs(state, Transport.Index));
         }
 
-        /// <summary>
-        /// Sets the maximum number of clients allowed to connect to the server.
-        /// </summary>
-        public void SetMaximumClients(int value)
+        protected override void OnPushMessageFailure(int channelId, ArraySegment<byte> payload, ulong clientId)
         {
-            _maximumClients = value;
+            DisconnectRemoteClient(clientId);
         }
 
-        /// <summary>
-        /// Send data to a connection over a particular channel.
-        /// </summary>
-        public void SendToClient(int channelId, ArraySegment<byte> message, int connectionId)
+        protected override void HandleReceivedData(ArraySegment<byte> message, Channel channel, ulong clientId)
         {
-            if (!TryGetConnection(connectionId, out NetworkConnection connection)) return;
-            Send(channelId, message, connection);
-        }
-        
-        private void HandleIncomingConnections()
-        {
-            NetworkConnection incomingConnection;
-            while ((incomingConnection = Driver.Accept()) != default)
-            {
-                _connections.Add(incomingConnection);
-
-                if (_connections.Length > _maximumClients)
-                {
-                    StopRemoteConnection(incomingConnection);
-                    return;
-                }
-                
-                Transport.HandleRemoteConnectionState(new RemoteConnectionStateArgs(RemoteConnectionState.Started, incomingConnection.GetHashCode(), Transport.Index));
-            }
-        }
-        
-        private void HandleIncomingEvents()
-        {
-            NetworkEvent.Type netEvent;
-            while ((netEvent = Driver.PopEvent(out NetworkConnection connection, out DataStreamReader stream, out NetworkPipeline pipeline)) !=
-                   NetworkEvent.Type.Empty)
-            {
-                switch (netEvent)
-                {
-                    case NetworkEvent.Type.Data:
-                        ReceiveMessages(GetConnectionId(connection), pipeline, stream);
-                        break;
-                    case NetworkEvent.Type.Disconnect:
-                        StopRemoteConnection(connection);
-                        break;
-                }
-            }
-        }
-
-        /// <summary>
-        /// Iterates through all incoming packets and handles them.
-        /// </summary>
-        internal void IterateIncoming()
-        {
-            if (!Driver.IsCreated ||
-                GetLocalConnectionState() == LocalConnectionState.Stopped ||
-                GetLocalConnectionState() == LocalConnectionState.Stopping)
-                return;
-
-            Driver.ScheduleUpdate().Complete();
-
-            if (Transport.UseRelay && Driver.GetRelayConnectionStatus() == RelayConnectionStatus.AllocationInvalid)
-            {
-                Debug.LogError("Transport failure! Relay allocation needs to be recreated, and NetworkManager restarted. " +
-                               "Use NetworkManager.OnTransportFailure to be notified of such events programmatically.");
-                
-                // TODO
-                // InvokeOnTransportEvent(NetcodeNetworkEvent.TransportFailure, 0, default, Time.realtimeSinceStartup);
-                return;
-            }
-            
-            HandleIncomingConnections();
-            HandleIncomingEvents();
+            Transport.HandleReceivedData(message, channel, clientId, Transport.Index, true);
         }
     }
 }

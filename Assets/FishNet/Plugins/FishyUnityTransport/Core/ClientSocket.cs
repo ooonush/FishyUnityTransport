@@ -5,44 +5,29 @@ using Unity.Networking.Transport;
 using Unity.Networking.Transport.Relay;
 using UnityEngine;
 
-namespace FishyUnityTransport
+namespace FishNet.Transporting.FishyUnityTransport
 {
+    [Serializable]
     internal class ClientSocket : CommonSocket
     {
-        private NetworkConnection _connection;
-        
-        private bool StartRelayClientConnect(ref RelayServerData relayServerData, int heartbeatTimeoutMS)
-        {
-            //This comparison is currently slow since RelayServerData does not implement a custom comparison operator that doesn't use
-            //reflection, but this does not live in the context of a performance-critical loop, it runs once at initial connection time.
-            if (relayServerData.Equals(default(RelayServerData)))
-            {
-                Debug.LogError("You must call SetRelayServerData() at least once before calling StartRelayServer.");
-                return false;
-            }
+        public ulong ServerClientId;
 
-            _networkSettings.WithRelayParameters(ref relayServerData, heartbeatTimeoutMS);
-            ClientBindAndConnect(relayServerData.Endpoint);
-            return true;
-        }
-
-        internal bool StartConnection()
+        public bool StartConnection()
         {
-            if (Driver.IsCreated || GetLocalConnectionState() != LocalConnectionState.Stopped)
+            if (Driver.IsCreated || State != LocalConnectionState.Stopped)
             {
                 if (Transport.NetworkManager.CanLog(LoggingType.Error))
                     Debug.LogError("Attempting to start a client that is already active.");
                 return false;
             }
-            
-            SetLocalConnectionState(LocalConnectionState.Starting, false);
 
-            bool succeeded = Transport.UseRelay 
-                ? StartRelayClientConnect(ref Transport.RelayServerData, Transport.HeartbeatTimeoutMS) 
-                : ClientBindAndConnect(Transport.ConnectionData.ServerEndPoint);
+            InitializeNetworkSettings();
 
+            SetLocalConnectionState(LocalConnectionState.Starting);
+
+            bool succeeded = ClientBindAndConnect();
             if (succeeded) return true;
-            SetLocalConnectionState(LocalConnectionState.Stopped, false);
+            SetLocalConnectionState(LocalConnectionState.Stopped);
             if (Driver.IsCreated)
             {
                 Driver.Dispose();
@@ -53,8 +38,28 @@ namespace FishyUnityTransport
             return false;
         }
 
-        private bool ClientBindAndConnect(NetworkEndPoint serverEndpoint)
+        private bool ClientBindAndConnect()
         {
+            NetworkEndPoint serverEndpoint;
+
+            if (Transport.ProtocolType == ProtocolType.RelayUnityTransport)
+            {
+                //This comparison is currently slow since RelayServerData does not implement a custom comparison operator that doesn't use
+                //reflection, but this does not live in the context of a performance-critical loop, it runs once at initial connection time.
+                if (Transport.RelayServerData.Equals(default(RelayServerData)))
+                {
+                    Debug.LogError("You must call SetRelayServerData() at least once before calling StartRelayServer.");
+                    return false;
+                }
+
+                NetworkSettings.WithRelayParameters(ref Transport.RelayServerData, Transport.HeartbeatTimeoutMS);
+                serverEndpoint = Transport.RelayServerData.Endpoint;
+            }
+            else
+            {
+                serverEndpoint = Transport.ConnectionData.ServerEndPoint;
+            }
+
             InitDriver();
 
             NetworkEndPoint bindEndpoint = serverEndpoint.Family == NetworkFamily.Ipv6 ? NetworkEndPoint.AnyIpv6 : NetworkEndPoint.AnyIpv4;
@@ -65,93 +70,73 @@ namespace FishyUnityTransport
                 return false;
             }
 
-            _connection = Driver.Connect(serverEndpoint);
-            
+            NetworkConnection serverConnection = Driver.Connect(serverEndpoint);
+            ServerClientId = ParseClientId(serverConnection);
+
             return true;
         }
 
-        /// <summary>
-        /// Stops the client connection.
-        /// </summary>
-        internal bool StopClient()
+        public void SendToServer(byte channelId, ArraySegment<byte> segment)
         {
-            LocalConnectionState state = GetLocalConnectionState();
-            if (state is LocalConnectionState.Stopped or LocalConnectionState.Stopping)
-                return false;
+            Send(channelId, segment, ServerClientId);
+        }
 
-            SetLocalConnectionState(LocalConnectionState.Stopping, false);
-            
-            foreach (var kvp in _sendQueue)
-            {
-                SendMessages(kvp.Key, kvp.Value);
-            }
-
-            if (_connection.IsCreated)
-            {
-                _connection.Disconnect(Driver);
-                _connection = default;
-            }
-
-            Driver.ScheduleUpdate().Complete();
-
-            if (Driver.IsCreated)
-            {
-                Driver.Dispose();
-            }
-            DisposeQueues();
-
-            SetLocalConnectionState(LocalConnectionState.Stopped, false);
+        public bool StopClient()
+        {
+            if (!DisconnectLocalClient()) return false;
+            Shutdown();
             return true;
         }
 
-        /// <summary>
-        /// Iterates through all incoming packets and handles them.
-        /// </summary>
-        internal void IterateIncoming()
+        protected override void HandleDisconnectEvent(ulong clientId)
         {
-            if (GetLocalConnectionState() == LocalConnectionState.Stopped || GetLocalConnectionState() == LocalConnectionState.Stopping)
-                return;
-            
-            Driver.ScheduleUpdate().Complete();
-
-            NetworkEvent.Type incomingEvent;
-            while ((incomingEvent = _connection.PopEvent(Driver, out DataStreamReader stream, out NetworkPipeline pipeline)) !=
-                   NetworkEvent.Type.Empty)
+            // Handle cases where we're a client receiving a Disconnect event. The
+            // meaning of the event depends on our current state. If we were connected
+            // then it means we got disconnected. If we were disconnected means that our
+            // connection attempt has failed.
+            if (State == LocalConnectionState.Started)
             {
-                switch (incomingEvent)
-                {
-                    case NetworkEvent.Type.Data:
-                        ReceiveMessages(_connection.GetHashCode(), pipeline, stream, false);
-                        break;
-                    case NetworkEvent.Type.Connect:
-                        SetLocalConnectionState(LocalConnectionState.Started, false);
-                        break;
-                    case NetworkEvent.Type.Disconnect:
-                        StopClient();
-                        break;
-                }
+                SetLocalConnectionState(LocalConnectionState.Stopped);
+                // m_ServerClientId = default;
+            }
+            else if (State == LocalConnectionState.Stopped)
+            {
+                Debug.LogError("Failed to connect to server.");
+                // m_ServerClientId = default;
             }
         }
 
-        /// <summary>
-        /// Sends a packet to the server.
-        /// </summary>
-        internal void SendToServer(byte channelId, ArraySegment<byte> segment)
+        public bool DisconnectLocalClient()
         {
-            if (GetLocalConnectionState() != LocalConnectionState.Started)
-            {
-                return;
-            }
-            
-            Send(channelId, segment, _connection);
+            if (State is LocalConnectionState.Stopped or LocalConnectionState.Stopping) return false;
+
+            SetLocalConnectionState(LocalConnectionState.Stopping);
+
+            FlushSendQueuesForClientId(ServerClientId);
+
+            if (ParseClientId(ServerClientId).Disconnect(Driver) != 0) return false;
+            ReliableReceiveQueues.Remove(ServerClientId);
+            ClearSendQueuesForClientId(ServerClientId);
+
+            SetLocalConnectionState(LocalConnectionState.Stopped);
+
+            return true;
         }
 
-        protected override void OnTransportFailure(NetworkConnection connection, ArraySegment<byte> message)
+        protected override void SetLocalConnectionState(LocalConnectionState state)
         {
-            if (connection == _connection)
-            {
-                StopClient();
-            }
+            State = state;
+            Transport.HandleClientConnectionState(new ClientConnectionStateArgs(state, Transport.Index));
+        }
+
+        protected override void OnPushMessageFailure(int channelId, ArraySegment<byte> payload, ulong clientId)
+        {
+            DisconnectLocalClient();
+        }
+
+        protected override void HandleReceivedData(ArraySegment<byte> message, Channel channel, ulong clientId)
+        {
+            Transport.HandleReceivedData(message, channel, clientId, Transport.Index, false);
         }
     }
 }
