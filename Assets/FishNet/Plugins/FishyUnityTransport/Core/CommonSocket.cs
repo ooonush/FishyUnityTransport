@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using FishNet.Managing;
+using FishNet.Transporting.FishyUnityTransport.BatchedQueue;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;

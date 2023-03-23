@@ -25,7 +25,7 @@ using Unity.Networking.Transport;
 
 // This implementation was borrowed from Unity Netcode for GameObjects as way
 // to work around the 44kb limit that reliable pipelines impose.
-namespace FishyUnityTransport
+namespace FishNet.Transporting.FishyUnityTransport.BatchedQueue
 {
     /// <summary>Queue for batched messages received through UTP.</summary>
     /// <remarks>This is meant as a companion to <see cref="BatchedSendQueue"/>.</remarks>

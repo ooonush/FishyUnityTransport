@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using FishNet.Managing;
 using FishNet.Managing.Logging;
-using FishNet.Transporting;
 using Unity.Networking.Transport;
 using Unity.Networking.Transport.Relay;
 using UnityEngine;

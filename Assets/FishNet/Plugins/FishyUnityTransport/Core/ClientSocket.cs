@@ -1,6 +1,5 @@
 ﻿using System;
 using FishNet.Managing.Logging;
-using FishNet.Transporting;
 using Unity.Networking.Transport;
 using Unity.Networking.Transport.Relay;
 using UnityEngine;
