@@ -2,6 +2,7 @@
 using FishNet.Managing.Logging;
 using Unity.Networking.Transport;
 using Unity.Networking.Transport.Relay;
+using Unity.Networking.Transport.TLS;
 using UnityEngine;
 
 namespace FishNet.Transporting.FishyUnityTransport
@@ -9,11 +10,17 @@ namespace FishNet.Transporting.FishyUnityTransport
     [Serializable]
     internal class ServerSocket : CommonSocket
     {
-        /// <summary>
-        /// Maximum number of connections allowed.
-        /// </summary>
-        [Range(1, 4095)]
-        public int MaximumClients = short.MaxValue; // TODO
+        private string _serverPrivateKey;
+        private string _serverCertificate;
+
+        /// <summary>Set the server parameters for encryption.</summary>
+        /// <param name="serverCertificate">Public certificate for the server (PEM format).</param>
+        /// <param name="serverPrivateKey">Private key for the server (PEM format).</param>
+        public void SetServerSecrets(string serverCertificate, string serverPrivateKey)
+        {
+            _serverPrivateKey = serverPrivateKey;
+            _serverCertificate = serverCertificate;
+        }
 
         #region Start And Stop Server
 
@@ -33,10 +40,10 @@ namespace FishNet.Transporting.FishyUnityTransport
 
             SetLocalConnectionState(LocalConnectionState.Starting);
 
-            bool succeeded = Transport.ProtocolType switch
+            bool succeeded = Transport.Protocol switch
             {
                 ProtocolType.UnityTransport => ServerBindAndListen(Transport.ConnectionData.ListenEndPoint),
-                ProtocolType.RelayUnityTransport => StartRelayServer(ref Transport.RelayServerData, Transport.HeartbeatTimeoutMS),
+                ProtocolType.RelayUnityTransport => StartRelayServer(ref Transport.RelayServerDataInternal, Transport.HeartbeatTimeoutMS),
                 _ => false
             };
 
@@ -67,7 +74,7 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         private bool ServerBindAndListen(NetworkEndPoint endPoint)
         {
-            InitDriver();
+            InitDriver(true);
 
             // Bind the driver to the endpoint
             Driver.Bind(endPoint);
@@ -145,9 +152,9 @@ namespace FishNet.Transporting.FishyUnityTransport
                 : Driver.RemoteEndPoint(connection).Address;
         }
 
-        protected override void HandleIncomingConnection(NetworkConnection incomingConnection)
+        protected virtual void HandleIncomingConnection(NetworkConnection incomingConnection)
         {
-            if (NetworkManager.ServerManager.Clients.Count >= MaximumClients)
+            if (NetworkManager.ServerManager.Clients.Count >= Transport.GetMaximumClients())
             {
                 DisconnectRemoteClient(ParseClientId(incomingConnection));
                 return;
@@ -181,7 +188,17 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         protected override void HandleReceivedData(ArraySegment<byte> message, Channel channel, ulong clientId)
         {
-            Transport.HandleReceivedData(message, channel, clientId, Transport.Index, true);
+            Transport.HandleServerReceivedData(message, channel, clientId, Transport.Index);
+        }
+
+        protected override void SetupSecureParameters()
+        {
+            if (string.IsNullOrEmpty(_serverCertificate) || string.IsNullOrEmpty(_serverPrivateKey))
+            {
+                throw new Exception("In order to use encrypted communications, when hosting, you must set the server certificate and key.");
+            }
+
+            NetworkSettings.WithSecureServerParameters(_serverCertificate, _serverPrivateKey);
         }
     }
 }

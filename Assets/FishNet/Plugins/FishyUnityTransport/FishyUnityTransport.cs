@@ -12,7 +12,183 @@ namespace FishNet.Transporting.FishyUnityTransport
     [AddComponentMenu("FishNet/Transport/FishyUnityTransport")]
     public class FishyUnityTransport : Transport
     {
-        [SerializeField] private int _heartbeatTimeoutMS = NetworkParameterConstants.HeartbeatTimeoutMS;
+        #region Constants
+
+        /// <summary>
+        /// The default maximum (receive) packet queue size
+        /// </summary>
+        private const int InitialMaxPacketQueueSize = 128;
+
+        /// <summary>
+        /// The default maximum payload size
+        /// </summary>
+        private const int InitialMaxPayloadSize = 6 * 1024;
+
+        // Maximum reliable throughput, assuming the full reliable window can be sent on every
+        // frame at 60 FPS. This will be a large over-estimation in any realistic scenario.
+        internal const int MaxReliableThroughput = NetworkParameterConstants.MTU * 32 * 60 / 1000; // bytes per millisecond
+
+        private static readonly ConnectionAddressData DefaultConnectionAddressData = new()
+        {
+            Address = "127.0.0.1", Port = 7777, ServerListenAddress = string.Empty
+        };
+
+        #endregion
+
+        public ProtocolType Protocol => _protocolType;
+        [SerializeField] private ProtocolType _protocolType;
+
+#if UTP_TRANSPORT_2_0_ABOVE
+        [Tooltip("Per default the client/server will communicate over UDP. Set to true to communicate with WebSocket.")]
+        [SerializeField]
+        private bool _useWebSockets = false;
+
+        public bool UseWebSockets
+        {
+            get => _useWebSockets;
+            set => _useWebSockets = value;
+        }
+
+        /// <summary>
+        /// Per default the client/server communication will not be encrypted. Select true to enable DTLS for UDP and TLS for Websocket.
+        /// </summary>
+        [Tooltip("Per default the client/server communication will not be encrypted. Select true to enable DTLS for UDP and TLS for Websocket.")]
+        [SerializeField]
+        private bool _useEncryption = false;
+        public bool UseEncryption
+        {
+            get => _useEncryption;
+            set => _useEncryption = value;
+        }
+#endif
+
+        [Tooltip("The maximum amount of packets that can be in the internal send/receive queues. Basically this is how many packets can be sent/received in a single update/frame.")]
+        [SerializeField]
+        private int _maxPacketQueueSize = InitialMaxPacketQueueSize;
+
+        /// <summary>The maximum amount of packets that can be in the internal send/receive queues.</summary>
+        /// <remarks>Basically this is how many packets can be sent/received in a single update/frame.</remarks>
+        public int MaxPacketQueueSize
+        {
+            get => _maxPacketQueueSize;
+            set => _maxPacketQueueSize = value;
+        }
+
+        [FormerlySerializedAs("m_MaxPayloadSize")]
+        [Tooltip("The maximum size of an unreliable payload that can be handled by the transport.")]
+        [SerializeField]
+        private int _maxPayloadSize = InitialMaxPayloadSize;
+
+        /// <summary>The maximum size of an unreliable payload that can be handled by the transport.</summary>
+        public int MaxPayloadSize
+        {
+            get => _maxPayloadSize;
+            set => _maxPayloadSize = value;
+        }
+
+        private int _maxSendQueueSize;
+
+        /// <summary>The maximum size in bytes of the transport send queue.</summary>
+        /// <remarks>
+        /// The send queue accumulates messages for batching and stores messages when other internal
+        /// send queues are full. Note that there should not be any need to set this value manually
+        /// since the send queue size is dynamically sized based on need.
+        ///
+        /// This value should only be set if you have particular requirements (e.g. if you want to
+        /// limit the memory usage of the send queues). Note however that setting this value too low
+        /// can easily lead to disconnections under heavy traffic.
+        /// </remarks>
+        public int MaxSendQueueSize
+        {
+            get => _maxSendQueueSize;
+            set => _maxSendQueueSize = value;
+        }
+
+        [Tooltip("Timeout in milliseconds after which a heartbeat is sent if there is no activity.")]
+        [SerializeField]
+        private int _heartbeatTimeoutMS = NetworkParameterConstants.HeartbeatTimeoutMS;
+
+        /// <summary>Timeout in milliseconds after which a heartbeat is sent if there is no activity.</summary>
+        public int HeartbeatTimeoutMS
+        {
+            get => _heartbeatTimeoutMS;
+            set => _heartbeatTimeoutMS = value;
+        }
+
+        [Tooltip("Timeout in milliseconds indicating how long we will wait until we send a new connection attempt.")]
+        [SerializeField]
+        private int _connectTimeoutMS = NetworkParameterConstants.ConnectTimeoutMS;
+
+        /// <summary>
+        /// Timeout in milliseconds indicating how long we will wait until we send a new connection attempt.
+        /// </summary>
+        public int ConnectTimeoutMS
+        {
+            get => _connectTimeoutMS;
+            set => _connectTimeoutMS = value;
+        }
+        
+        [Tooltip("The maximum amount of connection attempts we will try before disconnecting.")]
+        [SerializeField]
+        private int _maxConnectAttempts = NetworkParameterConstants.MaxConnectAttempts;
+
+        /// <summary>The maximum amount of connection attempts we will try before disconnecting.</summary>
+        public int MaxConnectAttempts
+        {
+            get => _maxConnectAttempts;
+            set => _maxConnectAttempts = value;
+        }
+
+        [Tooltip("Inactivity timeout after which a connection will be disconnected. The connection needs to receive data from the connected endpoint within this timeout. Note that with heartbeats enabled, simply not sending any data will not be enough to trigger this timeout (since heartbeats count as connection events).")]
+        [SerializeField]
+        private int _disconnectTimeoutMS = NetworkParameterConstants.DisconnectTimeoutMS;
+
+        /// <summary>Inactivity timeout after which a connection will be disconnected.</summary>
+        /// <remarks>
+        /// The connection needs to receive data from the connected endpoint within this timeout.
+        /// Note that with heartbeats enabled, simply not sending any data will not be enough to
+        /// trigger this timeout (since heartbeats count as connection events).
+        /// </remarks>
+        public int DisconnectTimeoutMS
+        {
+            get => _disconnectTimeoutMS;
+            set => _disconnectTimeoutMS = value;
+        }
+
+        public ConnectionAddressData ConnectionData = DefaultConnectionAddressData;
+
+        /// <summary>
+        /// Can be used to simulate poor network conditions such as:
+        /// - packet delay/latency
+        /// - packet jitter (variances in latency, see: https://en.wikipedia.org/wiki/Jitter)
+        /// - packet drop rate (packet loss)
+        /// </summary>
+#if UTP_TRANSPORT_2_0_ABOVE 
+        [Obsolete("DebugSimulator is no longer supported and has no effect. Use Network Simulator from the Multiplayer Tools package.", false)]
+#endif
+        public SimulatorParameters DebugSimulator = new()
+        {
+            PacketDelayMS = 0,
+            PacketJitterMS = 0,
+            PacketDropRate = 0
+        };
+
+        /// <summary>
+        /// Maximum number of connections allowed.
+        /// </summary>
+        [Range(1, 4095)]
+        [SerializeField] private int _maximumClients = short.MaxValue;
+
+        internal uint? DebugSimulatorRandomSeed { get; set; } = null;
+
+        internal RelayServerData RelayServerDataInternal;
+
+        public RelayServerData RelayServerData => RelayServerDataInternal;
+
+        private readonly ServerSocket _serverSocket = new();
+        private readonly ClientSocket _clientSocket = new();
+
+        #region ClientId And TransportId
 
         private int _localClientTransportId;
         private readonly Dictionary<int, ulong> _transportIdToClientIdMap = new();
@@ -25,56 +201,14 @@ namespace FishNet.Transporting.FishyUnityTransport
                 : _clientIdToTransportIdMap[clientId];
         }
 
-        internal ulong TransportIdToClientId(int transportId)
+        private ulong TransportIdToClientId(int transportId)
         {
             return transportId == _localClientTransportId
                 ? _clientSocket.ServerClientId
                 : _transportIdToClientIdMap[transportId];
         }
 
-        /// <summary>Timeout in milliseconds after which a heartbeat is sent if there is no activity.</summary>
-        public int HeartbeatTimeoutMS => _heartbeatTimeoutMS;
-
-        public int MaxPayloadSize = 6 * 1024;
-        [SerializeField] private int _disconnectTimeoutMS = NetworkParameterConstants.DisconnectTimeoutMS;
-        public int DisconnectTimeoutMS => _disconnectTimeoutMS;
-        
-        [Tooltip("The maximum amount of connection attempts we will try before disconnecting.")]
-        [SerializeField]
-        private int _maxConnectAttempts = NetworkParameterConstants.MaxConnectAttempts;
-
-        [FormerlySerializedAs("m_ConnectTimeoutMS")]
-        [Tooltip("Timeout in milliseconds indicating how long we will wait until we send a new connection attempt.")]
-        [SerializeField]
-        private int _connectTimeoutMS = NetworkParameterConstants.ConnectTimeoutMS;
-
-        [Tooltip("The maximum amount of packets that can be in the internal send/receive queues. Basically this is how many packets can be sent/received in a single update/frame.")]
-        public int MaxPacketQueueSize = 128;
-
-        /// <summary>
-        /// Timeout in milliseconds indicating how long we will wait until we send a new connection attempt.
-        /// </summary>
-        public int ConnectTimeoutMS
-        {
-            get => _connectTimeoutMS;
-            set => _connectTimeoutMS = value;
-        }
-
-        /// <summary>The maximum amount of connection attempts we will try before disconnecting.</summary>
-        public int MaxConnectAttempts
-        {
-            get => _maxConnectAttempts;
-            set => _maxConnectAttempts = value;
-        }
-
-        public RelayServerData RelayServerData;
-
-        private static readonly ConnectionAddressData DefaultConnectionAddressData = new() { Address = "127.0.0.1", Port = 7777, ServerListenAddress = string.Empty };
-        public ConnectionAddressData ConnectionData = DefaultConnectionAddressData;
-
-        [SerializeField] public ProtocolType ProtocolType;
-        [SerializeField] private ServerSocket _serverSocket = new();
-        [SerializeField] private ClientSocket _clientSocket = new();
+        #endregion
 
         #region Initialization and unity.
         /// <summary>
@@ -209,8 +343,8 @@ namespace FishNet.Transporting.FishyUnityTransport
         #endregion
 
         #region Configuration.
-        
-        public override int GetMaximumClients() => _serverSocket.MaximumClients;
+
+        public override int GetMaximumClients() => _maximumClients;
 
         public override void SetMaximumClients(int value)
         {
@@ -221,7 +355,7 @@ namespace FishNet.Transporting.FishyUnityTransport
             }
             else
             {
-                _serverSocket.MaximumClients = value;
+                _maximumClients = value;
             }
         }
 
@@ -253,6 +387,91 @@ namespace FishNet.Transporting.FishyUnityTransport
         public override string GetServerBindAddress(IPAddressType addressType)
         {
             return ConnectionData.ServerListenAddress;
+        }
+
+        /// <summary>Set the relay server data for the server.</summary>
+        /// <param name="ipv4Address">IP address or hostname of the relay server.</param>
+        /// <param name="port">UDP port of the relay server.</param>
+        /// <param name="allocationIdBytes">Allocation ID as a byte array.</param>
+        /// <param name="keyBytes">Allocation key as a byte array.</param>
+        /// <param name="connectionDataBytes">Connection data as a byte array.</param>
+        /// <param name="hostConnectionDataBytes">The HostConnectionData as a byte array.</param>
+        /// <param name="isSecure">Whether the connection is secure (uses DTLS).</param>
+        public void SetRelayServerData(string ipv4Address, ushort port, byte[] allocationIdBytes, byte[] keyBytes, byte[] connectionDataBytes, byte[] hostConnectionDataBytes = null, bool isSecure = false)
+        {
+            byte[] hostConnectionData = hostConnectionDataBytes ?? connectionDataBytes;
+            RelayServerDataInternal = new RelayServerData(ipv4Address, port, allocationIdBytes, connectionDataBytes, hostConnectionData, keyBytes, isSecure);
+            _protocolType = ProtocolType.RelayUnityTransport;
+        }
+
+        /// <summary>Set the relay server data for the host.</summary>
+        /// <param name="ipAddress">IP address or hostname of the relay server.</param>
+        /// <param name="port">UDP port of the relay server.</param>
+        /// <param name="allocationId">Allocation ID as a byte array.</param>
+        /// <param name="key">Allocation key as a byte array.</param>
+        /// <param name="connectionData">Connection data as a byte array.</param>
+        /// <param name="isSecure">Whether the connection is secure (uses DTLS).</param>
+        public void SetHostRelayData(string ipAddress, ushort port, byte[] allocationId, byte[] key, byte[] connectionData, bool isSecure = false)
+        {
+            SetRelayServerData(ipAddress, port, allocationId, key, connectionData, null, isSecure);
+        }
+
+        /// <summary>Set the relay server data for the host.</summary>
+        /// <param name="ipAddress">IP address or hostname of the relay server.</param>
+        /// <param name="port">UDP port of the relay server.</param>
+        /// <param name="allocationId">Allocation ID as a byte array.</param>
+        /// <param name="key">Allocation key as a byte array.</param>
+        /// <param name="connectionData">Connection data as a byte array.</param>
+        /// <param name="hostConnectionData">Host's connection data as a byte array.</param>
+        /// <param name="isSecure">Whether the connection is secure (uses DTLS).</param>
+        public void SetClientRelayData(string ipAddress, ushort port, byte[] allocationId, byte[] key, byte[] connectionData, byte[] hostConnectionData, bool isSecure = false)
+        {
+            SetRelayServerData(ipAddress, port, allocationId, key, connectionData, hostConnectionData, isSecure);
+        }
+
+        /// <summary>Set the relay server data (using the lower-level Unity Transport data structure).</summary>
+        /// <param name="serverData">Data for the Relay server to use.</param>
+        public void SetRelayServerData(RelayServerData serverData)
+        {
+            RelayServerDataInternal = serverData;
+            _protocolType = ProtocolType.RelayUnityTransport;
+        }
+
+        /// <summary>
+        /// Sets IP and Port information. This will be ignored if using the Unity Relay and you should call <see cref="SetRelayServerData(string,ushort,byte[],byte[],byte[],byte[],bool)"/>
+        /// </summary>
+        /// <param name="endPoint">The remote end point</param>
+        /// <param name="listenEndPoint">The local listen endpoint</param>
+        public void SetConnectionData(NetworkEndPoint endPoint, NetworkEndPoint listenEndPoint = default)
+        {
+            string serverAddress = endPoint.Address.Split(':')[0];
+
+            string listenAddress = string.Empty;
+            if (listenEndPoint != default)
+            {
+                listenAddress = listenEndPoint.Address.Split(':')[0];
+                if (endPoint.Port != listenEndPoint.Port)
+                {
+                    Debug.LogError($"Port mismatch between server and listen endpoints ({endPoint.Port} vs {listenEndPoint.Port}).");
+                }
+            }
+
+            SetConnectionData(serverAddress, endPoint.Port, listenAddress);
+        }
+
+        /// <summary>
+        /// Sets IP and Port information. This will be ignored if using the Unity Relay and you should call <see cref="SetRelayServerData(string,ushort,byte[],byte[],byte[],byte[],bool)"/>
+        /// </summary>
+        /// <param name="ipv4Address">The remote IP address (despite the name, can be an IPv6 address)</param>
+        /// <param name="port">The remote port</param>
+        /// <param name="listenAddress">The local listen address</param>
+        public void SetConnectionData(string ipv4Address, ushort port, string listenAddress = null)
+        {
+            ConnectionData.Address = ipv4Address;
+            ConnectionData.Port = port;
+            ConnectionData.ServerListenAddress = listenAddress ?? string.Empty;
+
+            _protocolType = ProtocolType.UnityTransport;
         }
 
         #endregion
@@ -306,23 +525,6 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         #endregion
 
-        public void SetConnectionData(string ipv4Address, ushort port, string listenAddress = null)
-        {
-            ConnectionData.Address = ipv4Address;
-            ConnectionData.Port = port;
-            ConnectionData.ServerListenAddress = listenAddress ?? string.Empty;
-
-            ProtocolType = ProtocolType.UnityTransport;
-        }
-
-        /// <summary>Set the relay server data (using the lower-level Unity Transport data structure).</summary>
-        /// <param name="serverData">Data for the Relay server to use.</param>
-        public void SetRelayServerData(RelayServerData serverData)
-        {
-            RelayServerData = serverData;
-            ProtocolType = ProtocolType.RelayUnityTransport;
-        }
-
         #region Privates.
 
         private bool StartServer()
@@ -352,27 +554,14 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         #endregion
 
-        /// <summary>
-        /// Can be used to simulate poor network conditions such as:
-        /// - packet delay/latency
-        /// - packet jitter (variances in latency, see: https://en.wikipedia.org/wiki/Jitter)
-        /// - packet drop rate (packet loss)
-        /// </summary>
-#if UTP_TRANSPORT_2_0_ABOVE 
-        [Obsolete("DebugSimulator is no longer supported and has no effect. Use Network Simulator from the Multiplayer Tools package.", false)]
-#endif
-        public SimulatorParameters DebugSimulator = new SimulatorParameters
+        internal static int ParseClientIdToTransportId(ulong clientId)
         {
-            PacketDelayMS = 0,
-            PacketJitterMS = 0,
-            PacketDropRate = 0
-        };
+            return clientId.GetHashCode();
+        }
 
-        internal uint? DebugSimulatorRandomSeed { get; set; } = null;
-
-        public void HandleRemoteConnectionState(RemoteConnectionState state, ulong clientId, int transportIndex)
+        internal void HandleRemoteConnectionState(RemoteConnectionState state, ulong clientId, int transportIndex)
         {
-            int transportId = clientId.GetHashCode();
+            int transportId = ParseClientIdToTransportId(clientId);
             switch (state)
             {
                 case RemoteConnectionState.Started:
@@ -390,16 +579,14 @@ namespace FishNet.Transporting.FishyUnityTransport
             HandleRemoteConnectionState(new RemoteConnectionStateArgs(state, transportId, transportIndex));
         }
 
-        public void HandleReceivedData(ArraySegment<byte> message, Channel channel, ulong clientId, int transportIndex, bool server)
+        internal void HandleServerReceivedData(ArraySegment<byte> message, Channel channel, ulong clientId, int transportIndex)
         {
-            if (server)
-            {
-                HandleServerReceivedDataArgs(new ServerReceivedDataArgs(message, channel, ClientIdToTransportId(clientId), transportIndex));
-            }
-            else
-            {
-                HandleClientReceivedDataArgs(new ClientReceivedDataArgs(message, channel, transportIndex));
-            }
+            HandleServerReceivedDataArgs(new ServerReceivedDataArgs(message, channel, ClientIdToTransportId(clientId), transportIndex));
+        }
+
+        internal void HandleClientReceivedData(ArraySegment<byte> message, Channel channel, int transportIndex)
+        {
+            HandleClientReceivedDataArgs(new ClientReceivedDataArgs(message, channel, transportIndex));
         }
     }
 }

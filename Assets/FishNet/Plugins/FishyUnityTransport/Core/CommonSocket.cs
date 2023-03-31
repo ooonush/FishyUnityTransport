@@ -4,7 +4,6 @@ using FishNet.Managing;
 using FishNet.Transporting.FishyUnityTransport.BatchedQueue;
 using Unity.Burst;
 using Unity.Collections;
-using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Networking.Transport;
 using Unity.Networking.Transport.Error;
@@ -17,8 +16,6 @@ namespace FishNet.Transporting.FishyUnityTransport
 {
     internal abstract class CommonSocket
     {
-        private const int MaxReliableThroughput = NetworkParameterConstants.MTU * 32 * 60 / 1000; // bytes per millisecond
-
         protected FishyUnityTransport Transport;
         protected NetworkManager NetworkManager;
 
@@ -27,16 +24,16 @@ namespace FishNet.Transporting.FishyUnityTransport
         /// </summary>
         protected NetworkDriver Driver;
         protected NetworkSettings NetworkSettings;
-        protected NetworkPipeline UnreliableFragmentedPipeline;
-        protected NetworkPipeline UnreliableSequencedFragmentedPipeline;
-        protected NetworkPipeline ReliableSequencedPipeline;
+        private NetworkPipeline _unreliableFragmentedPipeline;
+        private NetworkPipeline _unreliableSequencedFragmentedPipeline;
+        private NetworkPipeline _reliableSequencedPipeline;
 
         #region Queues
 
         /// <summary>
         /// SendQueue dictionary is used to batch events instead of sending them immediately.
         /// </summary>
-        protected readonly Dictionary<SendTarget, BatchedSendQueue> SendQueue = new();
+        private readonly Dictionary<SendTarget, BatchedSendQueue> _sendQueue = new();
 
         /// <summary>
         /// SendQueue dictionary is used to batch events instead of sending them immediately.
@@ -53,10 +50,9 @@ namespace FishNet.Transporting.FishyUnityTransport
         public void Initialize(FishyUnityTransport transport)
         {
             Transport = transport;
-            Debug.Assert(sizeof(ulong) == UnsafeUtility.SizeOf<NetworkConnection>(), "Netcode connection id size does not match UTP connection id size");
         }
 
-        public void InitializeNetworkSettings()
+        protected void InitializeNetworkSettings()
         {
             NetworkSettings = new NetworkSettings(Allocator.Persistent);
 
@@ -86,13 +82,13 @@ namespace FishNet.Transporting.FishyUnityTransport
 
             Driver.ScheduleUpdate().Complete();
 
-            if (Transport.ProtocolType == ProtocolType.RelayUnityTransport && Driver.GetRelayConnectionStatus() == RelayConnectionStatus.AllocationInvalid)
+            if (Transport.Protocol == ProtocolType.RelayUnityTransport && Driver.GetRelayConnectionStatus() == RelayConnectionStatus.AllocationInvalid)
             {
                 Debug.LogError("Transport failure! Relay allocation needs to be recreated, and NetworkManager restarted. " +
                                "Use NetworkManager.OnTransportFailure to be notified of such events programmatically.");
                 
                 // TODO
-                // InvokeOnTransportEvent(NetcodeNetworkEvent.TransportFailure, 0, default, Time.realtimeSinceStartup);
+                // InvokeOnTransportEvent(TransportFailure);
                 return;
             }
 
@@ -109,45 +105,9 @@ namespace FishNet.Transporting.FishyUnityTransport
                 return false;
             }
 
-            
             Transport.HandleRemoteConnectionState(RemoteConnectionState.Started, ParseClientId(connection), Transport.Index);
 
             return true;
-        }
-
-        protected virtual void HandleIncomingConnection(NetworkConnection connection) { }
-
-        private void HandleIncomingEvents()
-        {
-            NetworkEvent.Type netEvent;
-            while ((netEvent = Driver.PopEvent(out NetworkConnection connection, out DataStreamReader stream, out NetworkPipeline pipeline)) !=
-                   NetworkEvent.Type.Empty)
-            {
-                ulong clientId = ParseClientId(connection);
-                switch (netEvent)
-                {
-                    case NetworkEvent.Type.Data:
-                        ReceiveMessages(clientId, pipeline, stream);
-                        break;
-                    case NetworkEvent.Type.Disconnect:
-                        if (State != LocalConnectionState.Started) break;
-
-                        Transport.HandleRemoteConnectionState(RemoteConnectionState.Stopped, clientId, Transport.Index);
-
-                        FlushSendQueuesForClientId(clientId);
-
-                        ReliableReceiveQueues.Remove(clientId);
-                        ClearSendQueuesForClientId(clientId);
-
-                        if (Driver.GetConnectionState(connection) != NetworkConnection.State.Disconnected)
-                        {
-                            Driver.Disconnect(connection);
-                        }
-
-                        Driver.ScheduleUpdate().Complete();
-                        break;
-                }
-            }
         }
 
         protected virtual void HandleDisconnectEvent(ulong clientId) { }
@@ -193,7 +153,7 @@ namespace FishNet.Transporting.FishyUnityTransport
         {
             if (State is LocalConnectionState.Stopped or LocalConnectionState.Stopping) return;
 
-            foreach (var kvp in SendQueue)
+            foreach (var kvp in _sendQueue)
             {
                 SendBatchedMessages(kvp.Key, kvp.Value);
             }
@@ -228,12 +188,12 @@ namespace FishNet.Transporting.FishyUnityTransport
 
             NetworkSettings.Dispose();
 
-            foreach (BatchedSendQueue queue in SendQueue.Values)
+            foreach (BatchedSendQueue queue in _sendQueue.Values)
             {
                 queue.Dispose();
             }
 
-            SendQueue.Clear();
+            _sendQueue.Clear();
         }
 
         /// <summary>
@@ -245,14 +205,14 @@ namespace FishNet.Transporting.FishyUnityTransport
 
             NetworkPipeline pipeline = SelectSendPipeline((Channel)channelId);
 
-            if (pipeline != ReliableSequencedPipeline && payload.Count > Transport.MaxPayloadSize)
+            if (pipeline != _reliableSequencedPipeline && payload.Count > Transport.MaxPayloadSize)
             {
                 Debug.LogError($"Unreliable payload of size {payload.Count} larger than configured 'Max Payload Size' ({Transport.MaxPayloadSize}).");
                 return;
             }
 
             var sendTarget = new SendTarget(clientId, pipeline);
-            if (!SendQueue.TryGetValue(sendTarget, out BatchedSendQueue queue))
+            if (!_sendQueue.TryGetValue(sendTarget, out BatchedSendQueue queue))
             {
                 // timeout. The idea being that if the send queue contains enough reliable data that
                 // sending it all out would take longer than the disconnection timeout, then there's
@@ -268,23 +228,23 @@ namespace FishNet.Transporting.FishyUnityTransport
                 // send queues are dealt with by flushing it out to the network or simply dropping
                 // new messages if that fails.
                 
-                int maxCapacity = Transport.DisconnectTimeoutMS * MaxReliableThroughput;
+                int maxCapacity = Transport.MaxSendQueueSize > 0 ? Transport.MaxSendQueueSize : Transport.DisconnectTimeoutMS * FishyUnityTransport.MaxReliableThroughput;
 
                 queue = new BatchedSendQueue(Math.Max(maxCapacity, Transport.MaxPayloadSize));
 
-                SendQueue.Add(sendTarget, queue);
+                _sendQueue.Add(sendTarget, queue);
             }
 
             if (!queue.PushMessage(payload))
             {
-                if (pipeline == ReliableSequencedPipeline)
+                if (pipeline == _reliableSequencedPipeline)
                 {
                     // If the message is sent reliably, then we're over capacity and we can't
                     // provide any reliability guarantees anymore. Disconnect the client since at
                     // this point they're bound to become desynchronized.
 
                     Debug.LogError($"Couldn't add payload of size {payload.Count} to reliable send queue. " +
-                                   $"Closing connection {clientId} as reliability guarantees can't be maintained.");
+                                   $"Closing connection {Transport.ClientIdToTransportId(clientId)} as reliability guarantees can't be maintained.");
 
                     OnPushMessageFailure(channelId, payload, clientId);
                 }
@@ -309,14 +269,14 @@ namespace FishNet.Transporting.FishyUnityTransport
         /// <summary>
         /// Send all queued messages
         /// </summary>
-        protected void SendBatchedMessages(SendTarget sendTarget, BatchedSendQueue queue)
+        private void SendBatchedMessages(SendTarget sendTarget, BatchedSendQueue queue)
         {
             new SendBatchedMessagesJob
             {
                 Driver = Driver.ToConcurrent(),
                 Target = sendTarget,
                 Queue = queue,
-                ReliablePipeline = ReliableSequencedPipeline
+                ReliablePipeline = _reliableSequencedPipeline
             }.Run();
         }
 
@@ -339,7 +299,7 @@ namespace FishNet.Transporting.FishyUnityTransport
                     int result = Driver.BeginSend(pipeline, connection, out DataStreamWriter writer);
                     if (result != (int)StatusCode.Success)
                     {
-                        Debug.LogError($"Error sending message:{result}, {clientId}");
+                        Debug.LogError($"Error sending message:{result}, {FishyUnityTransport.ParseClientIdToTransportId(clientId)}");
                         return;
                     }
 
@@ -366,7 +326,7 @@ namespace FishNet.Transporting.FishyUnityTransport
                         // just get the same error again).
                         if (result != (int)StatusCode.NetworkSendQueueFull)
                         {
-                            Debug.LogError($"Error sending the message: {result}, {clientId}");
+                            Debug.LogError($"Error sending the message: {result}, {FishyUnityTransport.ParseClientIdToTransportId(clientId)}");
                             Queue.Consume(written);
                         }
 
@@ -382,7 +342,7 @@ namespace FishNet.Transporting.FishyUnityTransport
         private void ReceiveMessages(ulong clientId, NetworkPipeline pipeline, DataStreamReader dataReader)
         {
             BatchedReceiveQueue queue;
-            if (pipeline == ReliableSequencedPipeline)
+            if (pipeline == _reliableSequencedPipeline)
             {
                 if (ReliableReceiveQueues.TryGetValue(clientId, out queue))
                 {
@@ -408,7 +368,7 @@ namespace FishNet.Transporting.FishyUnityTransport
                     break;
                 }
 
-                Channel channel = pipeline == ReliableSequencedPipeline ? Channel.Reliable : Channel.Unreliable;
+                Channel channel = pipeline == _reliableSequencedPipeline ? Channel.Reliable : Channel.Unreliable;
 
                 HandleReceivedData(message, channel, clientId);
             }
@@ -420,7 +380,7 @@ namespace FishNet.Transporting.FishyUnityTransport
         {
             // NativeList and manual foreach avoids any allocations.
             using var keys = new NativeList<SendTarget>(16, Allocator.Temp);
-            foreach (SendTarget key in SendQueue.Keys)
+            foreach (SendTarget key in _sendQueue.Keys)
             {
                 if (key.ClientId == clientId)
                 {
@@ -430,14 +390,14 @@ namespace FishNet.Transporting.FishyUnityTransport
 
             foreach (SendTarget target in keys)
             {
-                SendQueue[target].Dispose();
-                SendQueue.Remove(target);
+                _sendQueue[target].Dispose();
+                _sendQueue.Remove(target);
             }
         }
 
         protected void FlushSendQueuesForClientId(ulong clientId)
         {
-            foreach (var kvp in SendQueue)
+            foreach (var kvp in _sendQueue)
             {
                 if (kvp.Key.ClientId == clientId)
                 {
@@ -456,7 +416,7 @@ namespace FishNet.Transporting.FishyUnityTransport
             // Flush all send queues to the network. NGO can be configured to flush its message
             // queue on shutdown. But this only calls the Send() method, which doesn't actually
             // get anything to the network.
-            foreach (var kvp in SendQueue)
+            foreach (var kvp in _sendQueue)
             {
                 SendBatchedMessages(kvp.Key, kvp.Value);
             }
@@ -475,18 +435,18 @@ namespace FishNet.Transporting.FishyUnityTransport
         {
             return channel switch
             {
-                Channel.Unreliable => UnreliableFragmentedPipeline,
-                Channel.Reliable => ReliableSequencedPipeline,
+                Channel.Unreliable => _unreliableFragmentedPipeline,
+                Channel.Reliable => _reliableSequencedPipeline,
                 _ => throw new ArgumentOutOfRangeException(nameof(channel), channel, null)
             };
         }
 
-        protected void InitDriver()
+        protected void InitDriver(bool asServer)
         {
-            CreateDriver(out Driver,
-                out UnreliableFragmentedPipeline,
-                out UnreliableSequencedFragmentedPipeline,
-                out ReliableSequencedPipeline);
+            CreateDriver(Transport, out Driver,
+                out _unreliableFragmentedPipeline,
+                out _unreliableSequencedFragmentedPipeline,
+                out _reliableSequencedPipeline, asServer);
         }
 
         #region DebugSimulator
@@ -499,7 +459,7 @@ namespace FishNet.Transporting.FishyUnityTransport
         {
             // As DebugSimulator is deprecated, the 'packetDelayMs', 'packetJitterMs' and 'packetDropPercentage'
             // parameters are set to the default and are supposed to be changed using Network Simulator tool instead.
-            m_NetworkSettings.WithSimulatorStageParameters(
+            NetworkSettings.WithSimulatorStageParameters(
                 maxPacketCount: 300, // TODO Is there any way to compute a better value?
                 maxPacketSize: NetworkParameterConstants.MTU,
                 packetDelayMs: 0,
@@ -509,7 +469,7 @@ namespace FishNet.Transporting.FishyUnityTransport
                 , mode: ApplyMode.AllPackets
             );
 
-            m_NetworkSettings.WithNetworkSimulatorParameters();
+            NetworkSettings.WithNetworkSimulatorParameters();
         }
 #else
         private void ConfigureSimulatorForUtp1()
@@ -528,52 +488,50 @@ namespace FishNet.Transporting.FishyUnityTransport
         #endregion
 
         #region CreateDriver
+        protected abstract void SetupSecureParameters();
 
         /// <summary>
         /// Creates the internal NetworkDriver
         /// </summary>
+        /// <param name="transport"></param>
         /// <param name="driver">The driver</param>
         /// <param name="unreliableFragmentedPipeline">The UnreliableFragmented NetworkPipeline</param>
         /// <param name="unreliableSequencedFragmentedPipeline">The UnreliableSequencedFragmented NetworkPipeline</param>
         /// <param name="reliableSequencedPipeline">The ReliableSequenced NetworkPipeline</param>
-        public void CreateDriver(out NetworkDriver driver,
+        /// <param name="asServer"></param>
+        private void CreateDriver(FishyUnityTransport transport, out NetworkDriver driver,
             out NetworkPipeline unreliableFragmentedPipeline,
             out NetworkPipeline unreliableSequencedFragmentedPipeline,
-            out NetworkPipeline reliableSequencedPipeline)
+            out NetworkPipeline reliableSequencedPipeline, bool asServer)
         {
-#if MULTIPLAYER_TOOLS_1_0_0_PRE_7 && !UTP_TRANSPORT_2_0_ABOVE
-            NetworkPipelineStageCollection.RegisterPipelineStage(new NetworkMetricsPipelineStage());
-#endif
-
 #if UTP_TRANSPORT_2_0_ABOVE && UNITY_MP_TOOLS_NETSIM_IMPLEMENTATION_ENABLED
             ConfigureSimulatorForUtp2();
 #elif !UTP_TRANSPORT_2_0_ABOVE && (UNITY_EDITOR || DEVELOPMENT_BUILD)
             ConfigureSimulatorForUtp1();
 #endif
-
             NetworkSettings.WithNetworkConfigParameters(
-                maxConnectAttempts: Transport.MaxConnectAttempts,
-                connectTimeoutMS: Transport.ConnectTimeoutMS,
-                disconnectTimeoutMS: Transport.DisconnectTimeoutMS,
+                maxConnectAttempts: transport.MaxConnectAttempts,
+                connectTimeoutMS: transport.ConnectTimeoutMS,
+                disconnectTimeoutMS: transport.DisconnectTimeoutMS,
 #if UTP_TRANSPORT_2_0_ABOVE
-                sendQueueCapacity: m_MaxPacketQueueSize,
-                receiveQueueCapacity: m_MaxPacketQueueSize,
+                sendQueueCapacity: Transport.MaxPacketQueueSize,
+                receiveQueueCapacity: Transport.MaxPacketQueueSize,
 #endif
-                heartbeatTimeoutMS: Transport.HeartbeatTimeoutMS);
+                heartbeatTimeoutMS: transport.HeartbeatTimeoutMS);
 
 #if UNITY_WEBGL && !UNITY_EDITOR
-            if (NetworkManager.IsServer)
+            if (asServer)
             {
                 throw new Exception("WebGL as a server is not supported by Unity Transport, outside the Editor.");
             }
 #endif
 
 #if UTP_TRANSPORT_2_0_ABOVE
-            if (m_UseEncryption)
+            if (transport.UseEncryption)
             {
-                if (m_ProtocolType == ProtocolType.RelayUnityTransport)
+                if (transport.ProtocolType == ProtocolType.RelayUnityTransport)
                 {
-                    if (m_RelayServerData.IsSecure == 0)
+                    if (transport.RelayServerData.IsSecure == 0)
                     {
                         // log an error because we have mismatched configuration
                         Debug.LogError("Mismatched security configuration, between Relay and local NetworkManager settings");
@@ -584,38 +542,15 @@ namespace FishNet.Transporting.FishyUnityTransport
                 }
                 else
                 {
-                    if (NetworkManager.IsServer)
-                    {
-                        if (String.IsNullOrEmpty(m_ServerCertificate) || String.IsNullOrEmpty(m_ServerPrivateKey))
-                        {
-                            throw new Exception("In order to use encrypted communications, when hosting, you must set the server certificate and key.");
-                        }
-
-                        m_NetworkSettings.WithSecureServerParameters(m_ServerCertificate, m_ServerPrivateKey);
-                    }
-                    else
-                    {
-                        if (String.IsNullOrEmpty(m_ServerCommonName))
-                        {
-                            throw new Exception("In order to use encrypted communications, clients must set the server common name.");
-                        }
-                        else if (String.IsNullOrEmpty(m_ClientCaCertificate))
-                        {
-                            m_NetworkSettings.WithSecureClientParameters(m_ServerCommonName);
-                        }
-                        else
-                        {
-                            m_NetworkSettings.WithSecureClientParameters(m_ClientCaCertificate, m_ServerCommonName);
-                        }
-                    }
+                    SetupSecureParameters();
                 }
             }
 #endif
 
 #if UTP_TRANSPORT_2_0_ABOVE
-            if (m_UseWebSockets)
+            if (transport.UseWebSockets)
             {
-                driver = NetworkDriver.Create(new WebSocketNetworkInterface(), m_NetworkSettings);
+                driver = NetworkDriver.Create(new WebSocketNetworkInterface(), NetworkSettings);
             }
             else
             {
@@ -623,15 +558,11 @@ namespace FishNet.Transporting.FishyUnityTransport
                 Debug.LogWarning($"WebSockets were used even though they're not selected in NetworkManager. You should check {nameof(UseWebSockets)}', on the Unity Transport component, to silence this warning.");
                 driver = NetworkDriver.Create(new WebSocketNetworkInterface(), m_NetworkSettings);
 #else
-                driver = NetworkDriver.Create(new UDPNetworkInterface(), m_NetworkSettings);
+                driver = NetworkDriver.Create(new UDPNetworkInterface(), NetworkSettings);
 #endif
             }
 #else
             driver = NetworkDriver.Create(NetworkSettings);
-#endif
-
-#if MULTIPLAYER_TOOLS_1_0_0_PRE_7 && UTP_TRANSPORT_2_0_ABOVE
-            driver.RegisterPipelineStage(new NetworkMetricsPipelineStage());
 #endif
 
 #if !UTP_TRANSPORT_2_0_ABOVE
@@ -660,26 +591,17 @@ namespace FishNet.Transporting.FishyUnityTransport
                     typeof(FragmentationPipelineStage),
                     typeof(SimulatorPipelineStage),
                     typeof(SimulatorPipelineStageInSend)
-#if MULTIPLAYER_TOOLS_1_0_0_PRE_7
-                    , typeof(NetworkMetricsPipelineStage)
-#endif
                 );
                 unreliableSequencedFragmentedPipeline = driver.CreatePipeline(
                     typeof(FragmentationPipelineStage),
                     typeof(UnreliableSequencedPipelineStage),
                     typeof(SimulatorPipelineStage),
                     typeof(SimulatorPipelineStageInSend)
-#if MULTIPLAYER_TOOLS_1_0_0_PRE_7
-                    , typeof(NetworkMetricsPipelineStage)
-#endif
                 );
                 reliableSequencedPipeline = driver.CreatePipeline(
                     typeof(ReliableSequencedPipelineStage),
                     typeof(SimulatorPipelineStage),
                     typeof(SimulatorPipelineStageInSend)
-#if MULTIPLAYER_TOOLS_1_0_0_PRE_7
-                    , typeof(NetworkMetricsPipelineStage)
-#endif
                 );
             }
             else
@@ -687,22 +609,13 @@ namespace FishNet.Transporting.FishyUnityTransport
             {
                 unreliableFragmentedPipeline = driver.CreatePipeline(
                     typeof(FragmentationPipelineStage)
-#if MULTIPLAYER_TOOLS_1_0_0_PRE_7
-                    , typeof(NetworkMetricsPipelineStage)
-#endif
                 );
                 unreliableSequencedFragmentedPipeline = driver.CreatePipeline(
                     typeof(FragmentationPipelineStage),
                     typeof(UnreliableSequencedPipelineStage)
-#if MULTIPLAYER_TOOLS_1_0_0_PRE_7
-                    , typeof(NetworkMetricsPipelineStage)
-#endif
                 );
                 reliableSequencedPipeline = driver.CreatePipeline(
                     typeof(ReliableSequencedPipelineStage)
-#if MULTIPLAYER_TOOLS_1_0_0_PRE_7
-                    , typeof(NetworkMetricsPipelineStage)
-#endif
                 );
             }
         }
@@ -718,9 +631,6 @@ namespace FishNet.Transporting.FishyUnityTransport
 #if UNITY_MP_TOOLS_NETSIM_IMPLEMENTATION_ENABLED
                 , typeof(SimulatorPipelineStage)
 #endif
-#if MULTIPLAYER_TOOLS_1_0_0_PRE_7
-                , typeof(NetworkMetricsPipelineStage)
-#endif
             );
 
             unreliableSequencedFragmentedPipeline = driver.CreatePipeline(
@@ -729,18 +639,12 @@ namespace FishNet.Transporting.FishyUnityTransport
 #if UNITY_MP_TOOLS_NETSIM_IMPLEMENTATION_ENABLED
                 , typeof(SimulatorPipelineStage)
 #endif
-#if MULTIPLAYER_TOOLS_1_0_0_PRE_7
-                , typeof(NetworkMetricsPipelineStage)
-#endif
             );
 
             reliableSequencedPipeline = driver.CreatePipeline(
                 typeof(ReliableSequencedPipelineStage)
 #if UNITY_MP_TOOLS_NETSIM_IMPLEMENTATION_ENABLED
                 , typeof(SimulatorPipelineStage)
-#endif
-#if MULTIPLAYER_TOOLS_1_0_0_PRE_7
-                , typeof(NetworkMetricsPipelineStage)
 #endif
             );
         }
