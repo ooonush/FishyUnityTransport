@@ -27,21 +27,23 @@ This library supports Unity Relay, and since its API is similar to the UnityTran
 
 ### Simple host connection sample:
 ```csharp
-// Get FishyUnityTransport  
-var utp = (FishyUnityTransport)NetworkManager.TransportManager.Transport;  
+// Get FishyUnityTransport
+var utp = (FishyUnityTransport)NetworkManager.TransportManager.Transport;
+
+// Setup HostAllocation
+Allocation hostAllocation = await RelayService.Instance.CreateAllocationAsync(4);
+utp.SetRelayServerData(new RelayServerData(hostAllocation, "dtls"));
   
-// Setup HostAllocation  
-Allocation hostAllocation = await RelayService.Instance.CreateAllocationAsync(4);  
-utp.SetRelayServerData(new RelayServerData(hostAllocation, "dtls"));  
+// Start Server Connection
+NetworkManager.ServerManager.StartConnection();
   
-// Start Server Connection  
-NetworkManager.ServerManager.StartConnection();  
-  
-// Setup JoinAllocation  
-string joinCode = await RelayService.Instance.GetJoinCodeAsync(hostAllocation.AllocationId);  
-JoinAllocation joinAllocation = await RelayService.Instance.JoinAllocationAsync(joinCode);  
-utp.SetRelayServerData(new RelayServerData(joinAllocation, "dtls"));  
-  
-// Start Client Connection  
+// Setup JoinAllocation
+// Remarks: It will currently work, but with a nasty bug (https://github.com/ooonush/FishyUnityTransport/issues/4).
+// This will be reworked in a future version.
+string joinCode = await RelayService.Instance.GetJoinCodeAsync(hostAllocation.AllocationId);
+JoinAllocation joinAllocation = await RelayService.Instance.JoinAllocationAsync(joinCode);
+utp.SetRelayServerData(new RelayServerData(joinAllocation, "dtls"));
+
+// Start Client Connection
 NetworkManager.ClientManager.StartConnection();
 ```
