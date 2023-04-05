@@ -26,8 +26,6 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Networking.Transport;
 
-// This implementation was borrowed from Unity Netcode for GameObjects as way
-// to work around the 44kb limit that reliable pipelines impose.
 namespace FishNet.Transporting.FishyUnityTransport.BatchedQueue
 {
     /// <summary>Queue for batched messages meant to be sent through UTP.</summary>
@@ -41,7 +39,7 @@ namespace FishNet.Transporting.FishyUnityTransport.BatchedQueue
     /// This is meant as a companion to <see cref="BatchedReceiveQueue"/>, which should be used to
     /// read messages sent with this queue.
     /// </remarks>
-    public struct BatchedSendQueue : IDisposable
+    internal struct BatchedSendQueue : IDisposable
     {
         // Note that we're using NativeList basically like a growable NativeArray, where the length
         // of the list is the capacity of our array. (We can't use the capacity of the list as our
@@ -119,7 +117,11 @@ namespace FishNet.Transporting.FishyUnityTransport.BatchedQueue
         /// <summary>Write a raw buffer to a DataStreamWriter.</summary>
         private unsafe void WriteBytes(ref DataStreamWriter writer, byte* data, int length)
         {
+#if UTP_TRANSPORT_2_0_ABOVE
+            writer.WriteBytesUnsafe(data, length);
+#else
             writer.WriteBytes(data, length);
+#endif
         }
 
         /// <summary>Append data at the tail of the queue. No safety checks.</summary>

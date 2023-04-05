@@ -3,22 +3,25 @@ using Unity.Networking.Transport;
 
 namespace FishNet.Transporting.FishyUnityTransport
 {
+    /// <summary>
+    /// Cached information about reliability mode with a certain client
+    /// </summary>
     public readonly struct SendTarget : IEquatable<SendTarget>
     {
-        public readonly NetworkConnection Connection;
+        public readonly ulong ClientId;
         public readonly NetworkPipeline NetworkPipeline;
 
-        public SendTarget(NetworkConnection connection, NetworkPipeline networkPipeline)
+        public SendTarget(ulong clientId, NetworkPipeline networkPipeline)
         {
-            Connection = connection;
+            ClientId = clientId;
             NetworkPipeline = networkPipeline;
         }
 
         public bool Equals(SendTarget other)
         {
-            return Connection.Equals(other.Connection) && NetworkPipeline.Equals(other.NetworkPipeline);
+            return ClientId == other.ClientId && NetworkPipeline.Equals(other.NetworkPipeline);
         }
-        
+
         public override bool Equals(object obj)
         {
             return obj is SendTarget other && Equals(other);
@@ -28,7 +31,7 @@ namespace FishNet.Transporting.FishyUnityTransport
         {
             unchecked
             {
-                return (Connection.GetHashCode() * 397) ^ NetworkPipeline.GetHashCode();
+                return (ClientId.GetHashCode() * 397) ^ NetworkPipeline.GetHashCode();
             }
         }
     }

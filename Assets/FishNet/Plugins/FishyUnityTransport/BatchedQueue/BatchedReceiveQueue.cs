@@ -22,14 +22,16 @@
 
 using System;
 using Unity.Networking.Transport;
+#if UTP_TRANSPORT_2_0_ABOVE
+using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
+#endif
 
-// This implementation was borrowed from Unity Netcode for GameObjects as way
-// to work around the 44kb limit that reliable pipelines impose.
 namespace FishNet.Transporting.FishyUnityTransport.BatchedQueue
 {
     /// <summary>Queue for batched messages received through UTP.</summary>
     /// <remarks>This is meant as a companion to <see cref="BatchedSendQueue"/>.</remarks>
-    public class BatchedReceiveQueue
+    internal class BatchedReceiveQueue
     {
         private byte[] m_Data;
         private int m_Offset;
@@ -49,7 +51,11 @@ namespace FishNet.Transporting.FishyUnityTransport.BatchedQueue
             {
                 fixed (byte* dataPtr = m_Data)
                 {
+#if UTP_TRANSPORT_2_0_ABOVE
+                    reader.ReadBytesUnsafe(dataPtr, reader.Length);
+#else
                     reader.ReadBytes(dataPtr, reader.Length);
+#endif
                 }
             }
 
@@ -86,7 +92,11 @@ namespace FishNet.Transporting.FishyUnityTransport.BatchedQueue
             {
                 fixed (byte* dataPtr = m_Data)
                 {
+#if UTP_TRANSPORT_2_0_ABOVE
+                    reader.ReadBytesUnsafe(dataPtr + m_Offset + m_Length, reader.Length);
+#else
                     reader.ReadBytes(dataPtr + m_Offset + m_Length, reader.Length);
+#endif
                 }
             }
 
