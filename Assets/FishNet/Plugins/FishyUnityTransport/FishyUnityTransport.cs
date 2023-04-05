@@ -50,18 +50,22 @@ namespace FishNet.Transporting.FishyUnityTransport
         [SerializeField]
         private bool _useWebSockets = false;
 
+        /// <summary>
+        /// "Per default the client/server will communicate over UDP. Set to true to communicate with WebSocket.
+        /// </summary>
         public bool UseWebSockets
         {
             get => _useWebSockets;
             set => _useWebSockets = value;
         }
 
-        /// <summary>
-        /// Per default the client/server communication will not be encrypted. Select true to enable DTLS for UDP and TLS for Websocket.
-        /// </summary>
+
         [Tooltip("Per default the client/server communication will not be encrypted. Select true to enable DTLS for UDP and TLS for Websocket.")]
         [SerializeField]
         private bool _useEncryption = false;
+        /// <summary>
+        /// Per default the client/server communication will not be encrypted. Select true to enable DTLS for UDP and TLS for Websocket.
+        /// </summary>
         public bool UseEncryption
         {
             get => _useEncryption;
@@ -81,7 +85,6 @@ namespace FishNet.Transporting.FishyUnityTransport
             set => _maxPacketQueueSize = value;
         }
 
-        [FormerlySerializedAs("m_MaxPayloadSize")]
         [Tooltip("The maximum size of an unreliable payload that can be handled by the transport.")]
         [SerializeField]
         private int _maxPayloadSize = InitialMaxPayloadSize;
@@ -184,7 +187,7 @@ namespace FishNet.Transporting.FishyUnityTransport
         /// Maximum number of connections allowed.
         /// </summary>
         [Range(1, 4095)]
-        [SerializeField] private int _maximumClients = short.MaxValue;
+        [SerializeField] private int _maximumClients = 4095;
 
         internal uint? DebugSimulatorRandomSeed { get; set; } = null;
 
