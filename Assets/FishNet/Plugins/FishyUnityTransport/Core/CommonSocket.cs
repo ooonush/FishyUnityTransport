@@ -10,7 +10,13 @@ using Unity.Networking.Transport.Error;
 using Unity.Networking.Transport.Relay;
 using Unity.Networking.Transport.Utilities;
 using UnityEngine;
+#if UTP_TRANSPORT_2_0_ABOVE
+using Unity.Networking.Transport.TLS;
+#endif
 
+#if !UTP_TRANSPORT_2_0_ABOVE
+using NetworkEndpoint = Unity.Networking.Transport.NetworkEndPoint;
+#endif
 
 namespace FishNet.Transporting.FishyUnityTransport
 {
@@ -529,7 +535,7 @@ namespace FishNet.Transporting.FishyUnityTransport
 #if UTP_TRANSPORT_2_0_ABOVE
             if (transport.UseEncryption)
             {
-                if (transport.ProtocolType == ProtocolType.RelayUnityTransport)
+                if (transport.Protocol == ProtocolType.RelayUnityTransport)
                 {
                     if (transport.RelayServerData.IsSecure == 0)
                     {

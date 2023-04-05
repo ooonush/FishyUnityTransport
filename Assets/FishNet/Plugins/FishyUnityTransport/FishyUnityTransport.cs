@@ -6,6 +6,13 @@ using Unity.Networking.Transport;
 using Unity.Networking.Transport.Relay;
 using UnityEngine;
 using UnityEngine.Serialization;
+#if UTP_TRANSPORT_2_0_ABOVE
+using Unity.Networking.Transport.TLS;
+#endif
+
+#if !UTP_TRANSPORT_2_0_ABOVE
+using NetworkEndpoint = Unity.Networking.Transport.NetworkEndPoint;
+#endif
 
 namespace FishNet.Transporting.FishyUnityTransport
 {
@@ -442,7 +449,7 @@ namespace FishNet.Transporting.FishyUnityTransport
         /// </summary>
         /// <param name="endPoint">The remote end point</param>
         /// <param name="listenEndPoint">The local listen endpoint</param>
-        public void SetConnectionData(NetworkEndPoint endPoint, NetworkEndPoint listenEndPoint = default)
+        public void SetConnectionData(NetworkEndpoint endPoint, NetworkEndpoint listenEndPoint = default)
         {
             string serverAddress = endPoint.Address.Split(':')[0];
 

@@ -4,6 +4,13 @@ using Unity.Networking.Transport;
 using Unity.Networking.Transport.Relay;
 using Unity.Networking.Transport.TLS;
 using UnityEngine;
+#if UTP_TRANSPORT_2_0_ABOVE
+using Unity.Networking.Transport.TLS;
+#endif
+
+#if !UTP_TRANSPORT_2_0_ABOVE
+using NetworkEndpoint = Unity.Networking.Transport.NetworkEndPoint;
+#endif
 
 namespace FishNet.Transporting.FishyUnityTransport
 {
@@ -56,7 +63,7 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         private bool ClientBindAndConnect()
         {
-            NetworkEndPoint serverEndpoint;
+            NetworkEndpoint serverEndpoint;
 
             if (Transport.Protocol == ProtocolType.RelayUnityTransport)
             {
@@ -78,7 +85,7 @@ namespace FishNet.Transporting.FishyUnityTransport
 
             InitDriver(false);
 
-            NetworkEndPoint bindEndpoint = serverEndpoint.Family == NetworkFamily.Ipv6 ? NetworkEndPoint.AnyIpv6 : NetworkEndPoint.AnyIpv4;
+            NetworkEndpoint bindEndpoint = serverEndpoint.Family == NetworkFamily.Ipv6 ? NetworkEndpoint.AnyIpv6 : NetworkEndpoint.AnyIpv4;
             Driver.Bind(bindEndpoint);
             if (!Driver.Bound)
             {

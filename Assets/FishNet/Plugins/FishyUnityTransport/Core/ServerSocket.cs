@@ -4,6 +4,13 @@ using Unity.Networking.Transport;
 using Unity.Networking.Transport.Relay;
 using Unity.Networking.Transport.TLS;
 using UnityEngine;
+#if UTP_TRANSPORT_2_0_ABOVE
+using Unity.Networking.Transport.TLS;
+#endif
+
+#if !UTP_TRANSPORT_2_0_ABOVE
+using NetworkEndpoint = Unity.Networking.Transport.NetworkEndPoint;
+#endif
 
 namespace FishNet.Transporting.FishyUnityTransport
 {
@@ -69,10 +76,10 @@ namespace FishNet.Transporting.FishyUnityTransport
             }
 
             NetworkSettings.WithRelayParameters(ref relayServerData, heartbeatTimeoutMS);
-            return ServerBindAndListen(NetworkEndPoint.AnyIpv4);
+            return ServerBindAndListen(NetworkEndpoint.AnyIpv4);
         }
 
-        private bool ServerBindAndListen(NetworkEndPoint endPoint)
+        private bool ServerBindAndListen(NetworkEndpoint endPoint)
         {
             InitDriver(true);
 
@@ -149,7 +156,11 @@ namespace FishNet.Transporting.FishyUnityTransport
             NetworkConnection connection = ParseClientId(clientId);
             return connection.GetState(Driver) == NetworkConnection.State.Disconnected
                 ? string.Empty
+#if UTP_TRANSPORT_2_0_ABOVE
+                : Driver.GetRemoteEndpoint(connection).Address;
+#else
                 : Driver.RemoteEndPoint(connection).Address;
+#endif
         }
 
         protected virtual void HandleIncomingConnection(NetworkConnection incomingConnection)
