@@ -25,6 +25,15 @@ Make sure you have the following packages installed:
 ## Unity Relay support
 This library supports Unity Relay, and since its API is similar to the UnityTransport for NGO API, I recommend reading the official Relay **[documentation](https://docs.unity.com/relay/en/manual/relay-and-ngo)**.
 
+To setup Unity Relay with Fishy Unity Transport follow these steps :
+1. Complete all steps above from `Setting Up`.
+2. Make sure you have installed and set up **Unity Authentication Service**, which is required to use the Relay services. **[AuthenticationService](https://docs.unity.com/authentication/en/manual/sign-up-for-ugs)**
+3. Make sure you are signing-in when entering Play Mode with the authentication service before using Unity Relay.
+4. Set the `ProtocoleType` field of the `FishyUnityTransport` component to `Relay Unity Transport`.
+5. Add the `FishyUnityTransportRelayManager` component to your `NetworkManager`
+6. Call one of the three method of `FishyUnityTransportRelayManager` : `StartHostWithRelay()`, `StartClientWithRelay(string joinCode)`, `StartServerWithRelay()`
+
+
 ### Simple host connection sample:
 ```csharp
 // Get FishyUnityTransport
