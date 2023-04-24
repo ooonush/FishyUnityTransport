@@ -3,7 +3,7 @@
 
 A UnityTransport implementation for Fish-Net.
 
-Important: this is under development and may not be stable, it is not recommended to use it in production.
+Important: this is under development and may not be stable, it is not recommended to use it in production. If you encounter any bugs, please make a bug report.
 
 	This is an improved fork from https://github.com/matthewshirley/FishyUTP.
 
