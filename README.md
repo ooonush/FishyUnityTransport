@@ -41,7 +41,8 @@ public async Task StartRelayHost()
     _networkManager.ServerManager.StartConnection();
 
     // Setup JoinAllocation
-    // Remarks: It will currently work, but with a nasty bug (https://github.com/ooonush/FishyUnityTransport/issues/4).
+    // Remarks: It will currently work, but with a nasty 
+    // bug (https://github.com/ooonush/FishyUnityTransport/issues/4).
     // This will be reworked in a future version.
     string joinCode = await RelayService.Instance.GetJoinCodeAsync(hostAllocation.AllocationId);
     JoinAllocation joinAllocation = await RelayService.Instance.JoinAllocationAsync(joinCode);
