@@ -17,7 +17,7 @@ namespace FishNet.Transporting.FishyUnityTransport
     [Serializable]
     internal class ClientSocket : CommonSocket
     {
-        public ulong ServerClientId { get; private set; }
+        private ulong _clientId;
         private string _serverCommonName;
         private string _clientCaCertificate;
 
@@ -93,15 +93,15 @@ namespace FishNet.Transporting.FishyUnityTransport
                 return false;
             }
 
-            NetworkConnection serverConnection = Driver.Connect(serverEndpoint);
-            ServerClientId = ParseClientId(serverConnection);
+            NetworkConnection connection = Driver.Connect(serverEndpoint);
+            _clientId = ParseClientId(connection);
 
             return true;
         }
 
         public void SendToServer(byte channelId, ArraySegment<byte> segment)
         {
-            Send(channelId, segment, ServerClientId);
+            Send(channelId, segment, _clientId);
         }
 
         public bool StopClient()
@@ -135,11 +135,11 @@ namespace FishNet.Transporting.FishyUnityTransport
 
             SetLocalConnectionState(LocalConnectionState.Stopping);
 
-            FlushSendQueuesForClientId(ServerClientId);
+            FlushSendQueuesForClientId(_clientId);
 
-            if (ParseClientId(ServerClientId).Disconnect(Driver) != 0) return false;
-            ReliableReceiveQueues.Remove(ServerClientId);
-            ClearSendQueuesForClientId(ServerClientId);
+            if (ParseClientId(_clientId).Disconnect(Driver) != 0) return false;
+            ReliableReceiveQueues.Remove(_clientId);
+            ClearSendQueuesForClientId(_clientId);
 
             SetLocalConnectionState(LocalConnectionState.Stopped);
 
@@ -149,7 +149,7 @@ namespace FishNet.Transporting.FishyUnityTransport
         protected override void SetLocalConnectionState(LocalConnectionState state)
         {
             State = state;
-            Transport.HandleClientConnectionState(new ClientConnectionStateArgs(state, Transport.Index));
+            Transport.HandleClientConnectionState(state, _clientId, Transport.Index);
         }
 
         protected override void OnPushMessageFailure(int channelId, ArraySegment<byte> payload, ulong clientId)

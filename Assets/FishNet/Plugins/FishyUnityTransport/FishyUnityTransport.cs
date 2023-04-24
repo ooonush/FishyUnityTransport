@@ -200,27 +200,17 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         #region ClientId And TransportId
 
-        private int _localClientTransportId;
         private readonly Dictionary<int, ulong> _transportIdToClientIdMap = new();
         private readonly Dictionary<ulong, int> _clientIdToTransportIdMap = new();
 
-        internal int ClientIdToTransportId(ulong clientId)
-        {
-            return clientId == _clientSocket.ServerClientId
-                ? _localClientTransportId
-                : _clientIdToTransportIdMap[clientId];
-        }
+        internal int ClientIdToTransportId(ulong clientId) => _clientIdToTransportIdMap[clientId];
 
-        private ulong TransportIdToClientId(int transportId)
-        {
-            return transportId == _localClientTransportId
-                ? _clientSocket.ServerClientId
-                : _transportIdToClientIdMap[transportId];
-        }
+        private ulong TransportIdToClientId(int transportId) => _transportIdToClientIdMap[transportId];
 
         #endregion
 
         #region Initialization and unity.
+
         /// <summary>
         /// Initializes the transport. Use this instead of Awake.
         /// </summary>
@@ -236,18 +226,18 @@ namespace FishNet.Transporting.FishyUnityTransport
         {
             Shutdown();
         }
+
         #endregion
 
         #region ConnectionStates.
+
         public override string GetConnectionAddress(int connectionId)
         {
             return _serverSocket.GetConnectionAddress(TransportIdToClientId(connectionId));
         }
-        
+
         public override event Action<ClientConnectionStateArgs> OnClientConnectionState;
-
         public override event Action<ServerConnectionStateArgs> OnServerConnectionState;
-
         public override event Action<RemoteConnectionStateArgs> OnRemoteConnectionState;
 
         public override LocalConnectionState GetConnectionState(bool server)
@@ -264,23 +254,26 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         public override void HandleClientConnectionState(ClientConnectionStateArgs connectionStateArgs)
         {
-            switch (connectionStateArgs.ConnectionState)
+            OnClientConnectionState?.Invoke(connectionStateArgs);
+        }
+
+        internal void HandleClientConnectionState(LocalConnectionState connectionState, ulong clientId, int transportIndex)
+        {
+            int transportId = ParseClientIdToTransportId(clientId);
+
+            switch (connectionState)
             {
-                case LocalConnectionState.Stopped:
-                    _localClientTransportId = _clientSocket.ServerClientId.GetHashCode();
-                    break;
-                case LocalConnectionState.Starting:
-                    break;
                 case LocalConnectionState.Started:
-                    _localClientTransportId = _clientSocket.ServerClientId.GetHashCode();
+                    _transportIdToClientIdMap[transportId] = clientId;
+                    _clientIdToTransportIdMap[clientId] = transportId;
                     break;
-                case LocalConnectionState.Stopping:
+                case LocalConnectionState.Stopped:
+                    _transportIdToClientIdMap.Remove(transportId);
+                    _clientIdToTransportIdMap.Remove(clientId);
                     break;
-                default:
-                    throw new ArgumentOutOfRangeException();
             }
 
-            OnClientConnectionState?.Invoke(connectionStateArgs);
+            HandleClientConnectionState(new ClientConnectionStateArgs(connectionState, transportIndex));
         }
 
         public override void HandleServerConnectionState(ServerConnectionStateArgs connectionStateArgs)
@@ -288,10 +281,36 @@ namespace FishNet.Transporting.FishyUnityTransport
             OnServerConnectionState?.Invoke(connectionStateArgs);
         }
 
+        internal void HandleRemoteConnectionState(RemoteConnectionState state, ulong clientId, int transportIndex)
+        {
+            int transportId = ParseClientIdToTransportId(clientId);
+            switch (state)
+            {
+                case RemoteConnectionState.Started:
+                    _transportIdToClientIdMap[transportId] = clientId;
+                    _clientIdToTransportIdMap[clientId] = transportId;
+                    break;
+                case RemoteConnectionState.Stopped:
+                    _transportIdToClientIdMap.Remove(transportId);
+                    _clientIdToTransportIdMap.Remove(clientId);
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(state), state, null);
+            }
+
+            HandleRemoteConnectionState(new RemoteConnectionStateArgs(state, transportId, transportIndex));
+        }
+
         public override void HandleRemoteConnectionState(RemoteConnectionStateArgs connectionStateArgs)
         {
             OnRemoteConnectionState?.Invoke(connectionStateArgs);
         }
+
+        internal static int ParseClientIdToTransportId(ulong clientId)
+        {
+            return clientId.GetHashCode();
+        }
+
         #endregion
 
         #region Iterating.
@@ -325,6 +344,11 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         public override event Action<ClientReceivedDataArgs> OnClientReceivedData;
 
+        internal void HandleClientReceivedData(ArraySegment<byte> message, Channel channel, int transportIndex)
+        {
+            HandleClientReceivedDataArgs(new ClientReceivedDataArgs(message, channel, transportIndex));
+        }
+
         public override void HandleClientReceivedDataArgs(ClientReceivedDataArgs receivedDataArgs)
         {
             OnClientReceivedData?.Invoke(receivedDataArgs);
@@ -332,10 +356,16 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         public override event Action<ServerReceivedDataArgs> OnServerReceivedData;
 
+        internal void HandleServerReceivedData(ArraySegment<byte> message, Channel channel, ulong clientId, int transportIndex)
+        {
+            HandleServerReceivedDataArgs(new ServerReceivedDataArgs(message, channel, ClientIdToTransportId(clientId), transportIndex));
+        }
+
         public override void HandleServerReceivedDataArgs(ServerReceivedDataArgs receivedDataArgs)
         {
             OnServerReceivedData?.Invoke(receivedDataArgs);
         }
+
         #endregion
 
         #region Sending.
@@ -563,40 +593,5 @@ namespace FishNet.Transporting.FishyUnityTransport
         }
 
         #endregion
-
-        internal static int ParseClientIdToTransportId(ulong clientId)
-        {
-            return clientId.GetHashCode();
-        }
-
-        internal void HandleRemoteConnectionState(RemoteConnectionState state, ulong clientId, int transportIndex)
-        {
-            int transportId = ParseClientIdToTransportId(clientId);
-            switch (state)
-            {
-                case RemoteConnectionState.Started:
-                    _transportIdToClientIdMap[transportId] = clientId;
-                    _clientIdToTransportIdMap[clientId] = transportId;
-                    break;
-                case RemoteConnectionState.Stopped:
-                    _transportIdToClientIdMap.Remove(transportId);
-                    _clientIdToTransportIdMap.Remove(clientId);
-                    break;
-                default:
-                    throw new ArgumentOutOfRangeException(nameof(state), state, null);
-            }
-
-            HandleRemoteConnectionState(new RemoteConnectionStateArgs(state, transportId, transportIndex));
-        }
-
-        internal void HandleServerReceivedData(ArraySegment<byte> message, Channel channel, ulong clientId, int transportIndex)
-        {
-            HandleServerReceivedDataArgs(new ServerReceivedDataArgs(message, channel, ClientIdToTransportId(clientId), transportIndex));
-        }
-
-        internal void HandleClientReceivedData(ArraySegment<byte> message, Channel channel, int transportIndex)
-        {
-            HandleClientReceivedDataArgs(new ClientReceivedDataArgs(message, channel, transportIndex));
-        }
     }
 }
