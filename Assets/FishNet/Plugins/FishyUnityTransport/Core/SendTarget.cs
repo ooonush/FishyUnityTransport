@@ -8,18 +8,18 @@ namespace FishNet.Transporting.FishyUnityTransport
     /// </summary>
     public readonly struct SendTarget : IEquatable<SendTarget>
     {
-        public readonly ulong ClientId;
+        public readonly NetworkConnection Connection;
         public readonly NetworkPipeline NetworkPipeline;
 
-        public SendTarget(ulong clientId, NetworkPipeline networkPipeline)
+        public SendTarget(NetworkConnection connection, NetworkPipeline networkPipeline)
         {
-            ClientId = clientId;
+            Connection = connection;
             NetworkPipeline = networkPipeline;
         }
 
         public bool Equals(SendTarget other)
         {
-            return ClientId == other.ClientId && NetworkPipeline.Equals(other.NetworkPipeline);
+            return Connection == other.Connection && NetworkPipeline.Equals(other.NetworkPipeline);
         }
 
         public override bool Equals(object obj)
@@ -31,7 +31,7 @@ namespace FishNet.Transporting.FishyUnityTransport
         {
             unchecked
             {
-                return (ClientId.GetHashCode() * 397) ^ NetworkPipeline.GetHashCode();
+                return (Connection.GetHashCode() * 397) ^ NetworkPipeline.GetHashCode();
             }
         }
     }

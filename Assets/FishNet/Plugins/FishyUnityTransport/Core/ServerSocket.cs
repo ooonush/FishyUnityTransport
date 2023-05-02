@@ -95,16 +95,13 @@ namespace FishNet.Transporting.FishyUnityTransport
 
             // and start listening for new connections.
             Driver.Listen();
-            if (!Driver.Listening)
+            if (Driver.Listening) return true;
+            if (Transport.NetworkManager.CanLog(LoggingType.Error))
             {
-                if (Transport.NetworkManager.CanLog(LoggingType.Error))
-                {
-                    Debug.LogError("Server failed to listen");
-                }
-                return false;
+                Debug.LogError("Server failed to listen");
             }
+            return false;
 
-            return true;
         }
 
         /// <summary>
@@ -125,35 +122,31 @@ namespace FishNet.Transporting.FishyUnityTransport
         /// <summary>
         /// Stops a remote client from the server, disconnecting the client.
         /// </summary>
-        /// <param name="clientId"></param>
-        public bool DisconnectRemoteClient(ulong clientId)
+        /// <param name="connection"></param>
+        public bool DisconnectRemoteClient(NetworkConnection connection)
         {
+            Debug.Assert(State == LocalConnectionState.Started, "DisconnectRemoteClient should be called on a listening server");
             if (State != LocalConnectionState.Started) return false;
 
-            FlushSendQueuesForClientId(clientId);
+            FlushSendQueuesForClientId(connection);
+            ReliableReceiveQueues.Remove(connection);
+            ClearSendQueuesForClientId(connection);
 
-            ReliableReceiveQueues.Remove(clientId);
-            ClearSendQueuesForClientId(clientId);
-
-            NetworkConnection connection = ParseClientId(clientId);
             if (Driver.GetConnectionState(connection) != NetworkConnection.State.Disconnected)
             {
                 Driver.Disconnect(connection);
             }
-
-            Transport.HandleRemoteConnectionState(RemoteConnectionState.Stopped, clientId, Transport.Index);
-
+            Transport.HandleRemoteConnectionState(RemoteConnectionState.Stopped, connection, Transport.Index);
             return true;
         }
 
-        protected override void HandleDisconnectEvent(ulong clientId)
+        protected override void HandleDisconnectEvent(NetworkConnection connection)
         {
-            Transport.HandleRemoteConnectionState(RemoteConnectionState.Stopped, clientId, Transport.Index);
+            Transport.HandleRemoteConnectionState(RemoteConnectionState.Stopped, connection, Transport.Index);
         }
 
-        public string GetConnectionAddress(ulong clientId)
+        public string GetConnectionAddress(NetworkConnection connection)
         {
-            NetworkConnection connection = ParseClientId(clientId);
             return connection.GetState(Driver) == NetworkConnection.State.Disconnected
                 ? string.Empty
 #if UTP_TRANSPORT_2_0_ABOVE
@@ -167,20 +160,11 @@ namespace FishNet.Transporting.FishyUnityTransport
         {
             if (NetworkManager.ServerManager.Clients.Count >= Transport.GetMaximumClients())
             {
-                DisconnectRemoteClient(ParseClientId(incomingConnection));
+                DisconnectRemoteClient(incomingConnection);
                 return;
             }
 
-            Transport.HandleRemoteConnectionState(new RemoteConnectionStateArgs(RemoteConnectionState.Started, incomingConnection.GetHashCode(), Transport.Index));
-        }
-        
-        /// <summary>
-        /// Gets the current ConnectionState of a remote client on the server.
-        /// </summary>
-        /// <param name="clientId">ConnectionId to get ConnectionState for.</param>
-        public NetworkConnection.State GetConnectionState(ulong clientId)
-        {
-            return ParseClientId(clientId).GetState(Driver);
+            Transport.HandleRemoteConnectionState(RemoteConnectionState.Started, incomingConnection, Transport.Index);
         }
 
         protected override void SetLocalConnectionState(LocalConnectionState state)
@@ -188,18 +172,21 @@ namespace FishNet.Transporting.FishyUnityTransport
             if (state == State) return;
 
             State = state;
-
-            Transport.HandleServerConnectionState(new ServerConnectionStateArgs(state, Transport.Index));
+            if (Transport)
+            {
+                Transport.HandleServerConnectionState(new ServerConnectionStateArgs(state, Transport.Index));
+            }
         }
 
-        protected override void OnPushMessageFailure(int channelId, ArraySegment<byte> payload, ulong clientId)
+        protected override void OnPushMessageFailure(int channelId, ArraySegment<byte> payload, NetworkConnection connection)
         {
-            DisconnectRemoteClient(clientId);
+            DisconnectRemoteClient(connection);
+            Transport.HandleRemoteConnectionState(RemoteConnectionState.Stopped, connection, Transport.Index);
         }
 
-        protected override void HandleReceivedData(ArraySegment<byte> message, Channel channel, ulong clientId)
+        protected override void HandleReceivedData(ArraySegment<byte> message, Channel channel, NetworkConnection connection)
         {
-            Transport.HandleServerReceivedData(message, channel, clientId, Transport.Index);
+            Transport.HandleServerReceivedData(message, channel, connection, Transport.Index);
         }
 
         protected override void SetupSecureParameters()
@@ -210,6 +197,11 @@ namespace FishNet.Transporting.FishyUnityTransport
             }
 
             NetworkSettings.WithSecureServerParameters(_serverCertificate, _serverPrivateKey);
+        }
+
+        public NetworkConnection.State GetConnectionState(NetworkConnection connection)
+        {
+            return connection.GetState(Driver);
         }
     }
 }
