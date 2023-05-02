@@ -17,7 +17,7 @@ namespace FishNet.Transporting.FishyUnityTransport
     [Serializable]
     internal class ClientSocket : CommonSocket
     {
-        private ulong _clientId;
+        private NetworkConnection _connection;
         private string _serverCommonName;
         private string _clientCaCertificate;
 
@@ -37,7 +37,7 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         public bool StartConnection()
         {
-            if (Driver.IsCreated || State != LocalConnectionState.Stopped)
+            if (Driver.IsCreated)
             {
                 if (Transport.NetworkManager.CanLog(LoggingType.Error))
                     Debug.LogError("Attempting to start a client that is already active.");
@@ -55,8 +55,6 @@ namespace FishNet.Transporting.FishyUnityTransport
             {
                 Driver.Dispose();
             }
-
-            // SetLocalConnectionState(LocalConnectionState.Started, false);
 
             return false;
         }
@@ -93,25 +91,38 @@ namespace FishNet.Transporting.FishyUnityTransport
                 return false;
             }
 
-            NetworkConnection connection = Driver.Connect(serverEndpoint);
-            _clientId = ParseClientId(connection);
+            _connection = Driver.Connect(serverEndpoint);
 
             return true;
         }
 
         public void SendToServer(byte channelId, ArraySegment<byte> segment)
         {
-            Send(channelId, segment, _clientId);
+            Send(channelId, segment, _connection);
         }
 
         public bool StopClient()
         {
-            if (!DisconnectLocalClient()) return false;
+            LocalConnectionState state = State;
+            if (State is LocalConnectionState.Stopped or LocalConnectionState.Stopping) return false;
+
+            SetLocalConnectionState(LocalConnectionState.Stopping);
+
+            FlushSendQueuesForClientId(_connection);
+
+            if (_connection.Disconnect(Driver) != 0)
+            {
+                SetLocalConnectionState(state);
+                return false;
+            }
             Shutdown();
+
+            SetLocalConnectionState(LocalConnectionState.Stopped);
+
             return true;
         }
 
-        protected override void HandleDisconnectEvent(ulong clientId)
+        protected override void HandleDisconnectEvent(NetworkConnection connection)
         {
             // Handle cases where we're a client receiving a Disconnect event. The
             // meaning of the event depends on our current state. If we were connected
@@ -120,44 +131,39 @@ namespace FishNet.Transporting.FishyUnityTransport
             if (State == LocalConnectionState.Started)
             {
                 SetLocalConnectionState(LocalConnectionState.Stopped);
-                // m_ServerClientId = default;
+                _connection = default;
             }
             else if (State == LocalConnectionState.Stopped)
             {
                 Debug.LogError("Failed to connect to server.");
-                // m_ServerClientId = default;
+                _connection = default;
             }
         }
 
-        public bool DisconnectLocalClient()
+        protected override void Shutdown()
         {
-            if (State is LocalConnectionState.Stopped or LocalConnectionState.Stopping) return false;
-
-            SetLocalConnectionState(LocalConnectionState.Stopping);
-
-            FlushSendQueuesForClientId(_clientId);
-
-            if (ParseClientId(_clientId).Disconnect(Driver) != 0) return false;
-            ReliableReceiveQueues.Remove(_clientId);
-            ClearSendQueuesForClientId(_clientId);
-
-            SetLocalConnectionState(LocalConnectionState.Stopped);
-
-            return true;
+            base.Shutdown();
+            _connection = default;
         }
 
         protected override void SetLocalConnectionState(LocalConnectionState state)
         {
             State = state;
-            Transport.HandleClientConnectionState(state, _clientId, Transport.Index);
+            if (Transport)
+            {
+                Transport.HandleClientConnectionState(state, _connection, Transport.Index);
+            }
         }
 
-        protected override void OnPushMessageFailure(int channelId, ArraySegment<byte> payload, ulong clientId)
+        protected override void OnPushMessageFailure(int channelId, ArraySegment<byte> payload, NetworkConnection connection)
         {
-            DisconnectLocalClient();
+            if (connection == _connection)
+            {
+                StopClient();
+            }
         }
 
-        protected override void HandleReceivedData(ArraySegment<byte> message, Channel channel, ulong clientId)
+        protected override void HandleReceivedData(ArraySegment<byte> message, Channel channel, NetworkConnection connection)
         {
             Transport.HandleClientReceivedData(message, channel, Transport.Index);
         }

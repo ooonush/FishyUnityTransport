@@ -4,7 +4,6 @@
     "references": [
         "GUID:7c88a4a7926ee5145ad2dfa06f454c67",
         "GUID:e0cd26848372d4e5c891c569017e11f1",
-        "GUID:fe25561d224ed4743af4c60938a59d0b",
         "GUID:f2d49d9fa7e7eb3418e39723a7d3b92f",
         "GUID:2665a8d13d1b3f18800f46e256720795"
     ],
@@ -15,6 +14,12 @@
     "precompiledReferences": [],
     "autoReferenced": true,
     "defineConstraints": [],
-    "versionDefines": [],
+    "versionDefines": [
+        {
+            "name": "com.unity.transport",
+            "expression": "2.0.0-exp",
+            "define": "UTP_TRANSPORT_2_0_ABOVE"
+        }
+    ],
     "noEngineReferences": false
 }

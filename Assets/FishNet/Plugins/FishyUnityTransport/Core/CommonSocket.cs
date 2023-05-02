@@ -20,7 +20,7 @@ using NetworkEndpoint = Unity.Networking.Transport.NetworkEndPoint;
 
 namespace FishNet.Transporting.FishyUnityTransport
 {
-    internal abstract class CommonSocket
+    internal abstract class CommonSocket : IDisposable
     {
         protected FishyUnityTransport Transport;
         protected NetworkManager NetworkManager;
@@ -44,7 +44,7 @@ namespace FishNet.Transporting.FishyUnityTransport
         /// <summary>
         /// SendQueue dictionary is used to batch events instead of sending them immediately.
         /// </summary>
-        protected readonly Dictionary<ulong, BatchedReceiveQueue> ReliableReceiveQueues = new();
+        protected readonly Dictionary<NetworkConnection, BatchedReceiveQueue> ReliableReceiveQueues = new();
 
         #endregion
 
@@ -75,7 +75,7 @@ namespace FishNet.Transporting.FishyUnityTransport
 #endif
 #endif
         }
-        
+
         #region Iterate Incoming
 
         /// <summary>
@@ -92,7 +92,7 @@ namespace FishNet.Transporting.FishyUnityTransport
             {
                 Debug.LogError("Transport failure! Relay allocation needs to be recreated, and NetworkManager restarted. " +
                                "Use NetworkManager.OnTransportFailure to be notified of such events programmatically.");
-                
+
                 // TODO
                 // InvokeOnTransportEvent(TransportFailure);
                 return;
@@ -111,17 +111,16 @@ namespace FishNet.Transporting.FishyUnityTransport
                 return false;
             }
 
-            Transport.HandleRemoteConnectionState(RemoteConnectionState.Started, ParseClientId(connection), Transport.Index);
+            Transport.HandleRemoteConnectionState(RemoteConnectionState.Started, connection, Transport.Index);
 
             return true;
         }
 
-        protected virtual void HandleDisconnectEvent(ulong clientId) { }
+        protected virtual void HandleDisconnectEvent(NetworkConnection connection) { }
 
         private bool ProcessEvent()
         {
             NetworkEvent.Type eventType = Driver.PopEvent(out NetworkConnection networkConnection, out DataStreamReader reader, out NetworkPipeline pipeline);
-            ulong clientId = ParseClientId(networkConnection);
             switch (eventType)
             {
                 case NetworkEvent.Type.Connect:
@@ -131,16 +130,16 @@ namespace FishNet.Transporting.FishyUnityTransport
                 }
                 case NetworkEvent.Type.Disconnect:
                 {
-                    ReliableReceiveQueues.Remove(clientId);
-                    ClearSendQueuesForClientId(clientId);
+                    ReliableReceiveQueues.Remove(networkConnection);
+                    ClearSendQueuesForClientId(networkConnection);
 
-                    HandleDisconnectEvent(clientId);
+                    HandleDisconnectEvent(networkConnection);
 
                     return true;
                 }
                 case NetworkEvent.Type.Data:
                 {
-                    ReceiveMessages(clientId, pipeline, reader);
+                    ReceiveMessages(networkConnection, pipeline, reader);
                     return true;
                 }
             }
@@ -165,16 +164,6 @@ namespace FishNet.Transporting.FishyUnityTransport
             }
         }
 
-        protected static unsafe ulong ParseClientId(NetworkConnection utpConnectionId)
-        {
-            return *(ulong*)&utpConnectionId;
-        }
-
-        protected static unsafe NetworkConnection ParseClientId(ulong clientId)
-        {
-            return *(NetworkConnection*)&clientId;
-        }
-
         /// <summary>
         /// Returns this drivers max header size based on the requested channel.
         /// </summary>
@@ -185,7 +174,7 @@ namespace FishNet.Transporting.FishyUnityTransport
             return State == LocalConnectionState.Started ? Driver.MaxHeaderSize(SelectSendPipeline(channel)) : 0;
         }
 
-        private void DisposeInternals()
+        public void Dispose()
         {
             if (Driver.IsCreated)
             {
@@ -205,7 +194,7 @@ namespace FishNet.Transporting.FishyUnityTransport
         /// <summary>
         /// Sends a message via the transport
         /// </summary>
-        public void Send(int channelId, ArraySegment<byte> payload, ulong clientId)
+        public void Send(int channelId, ArraySegment<byte> payload, NetworkConnection connection)
         {
             if (State != LocalConnectionState.Started) return;
 
@@ -217,7 +206,7 @@ namespace FishNet.Transporting.FishyUnityTransport
                 return;
             }
 
-            var sendTarget = new SendTarget(clientId, pipeline);
+            var sendTarget = new SendTarget(connection, pipeline);
             if (!_sendQueue.TryGetValue(sendTarget, out BatchedSendQueue queue))
             {
                 // timeout. The idea being that if the send queue contains enough reliable data that
@@ -233,7 +222,7 @@ namespace FishNet.Transporting.FishyUnityTransport
                 // the only case where a full send queue causes a connection loss. Full unreliable
                 // send queues are dealt with by flushing it out to the network or simply dropping
                 // new messages if that fails.
-                
+
                 int maxCapacity = Transport.MaxSendQueueSize > 0 ? Transport.MaxSendQueueSize : Transport.DisconnectTimeoutMS * FishyUnityTransport.MaxReliableThroughput;
 
                 queue = new BatchedSendQueue(Math.Max(maxCapacity, Transport.MaxPayloadSize));
@@ -250,9 +239,9 @@ namespace FishNet.Transporting.FishyUnityTransport
                     // this point they're bound to become desynchronized.
 
                     Debug.LogError($"Couldn't add payload of size {payload.Count} to reliable send queue. " +
-                                   $"Closing connection {Transport.ClientIdToTransportId(clientId)} as reliability guarantees can't be maintained.");
+                                   $"Closing connection {Transport.ConnectionToTransportId(connection)} as reliability guarantees can't be maintained.");
 
-                    OnPushMessageFailure(channelId, payload, clientId);
+                    OnPushMessageFailure(channelId, payload, connection);
                 }
                 else
                 {
@@ -270,7 +259,7 @@ namespace FishNet.Transporting.FishyUnityTransport
             }
         }
 
-        protected abstract void OnPushMessageFailure(int channelId, ArraySegment<byte> payload, ulong clientId);
+        protected abstract void OnPushMessageFailure(int channelId, ArraySegment<byte> payload, NetworkConnection connection);
 
         /// <summary>
         /// Send all queued messages
@@ -296,16 +285,16 @@ namespace FishNet.Transporting.FishyUnityTransport
 
             public void Execute()
             {
-                ulong clientId = Target.ClientId;
-                NetworkConnection connection = ParseClientId(clientId);
+                NetworkConnection connection = Target.Connection;
                 NetworkPipeline pipeline = Target.NetworkPipeline;
 
                 while (!Queue.IsEmpty)
                 {
                     int result = Driver.BeginSend(pipeline, connection, out DataStreamWriter writer);
-                    if (result != (int)StatusCode.Success)
+
+                    if ((StatusCode)result != StatusCode.Success)
                     {
-                        Debug.LogError($"Error sending message:{result}, {FishyUnityTransport.ParseClientIdToTransportId(clientId)}");
+                        Debug.LogError($"Error sending the message to client {FishyUnityTransport.ParseTransportId(connection)} with code: {(StatusCode)result}");
                         return;
                     }
 
@@ -330,9 +319,9 @@ namespace FishNet.Transporting.FishyUnityTransport
                         // and we'll retry sending them later). Otherwise log the error and remove the
                         // message from the queue (we don't want to resend it again since we'll likely
                         // just get the same error again).
-                        if (result != (int)StatusCode.NetworkSendQueueFull)
+                        if ((StatusCode)result != StatusCode.NetworkSendQueueFull)
                         {
-                            Debug.LogError($"Error sending the message: {result}, {FishyUnityTransport.ParseClientIdToTransportId(clientId)}");
+                            Debug.LogError($"Error sending the message to client {FishyUnityTransport.ParseTransportId(connection)} with code: {(StatusCode)result}");
                             Queue.Consume(written);
                         }
 
@@ -345,19 +334,19 @@ namespace FishNet.Transporting.FishyUnityTransport
         /// <summary>
         /// Returns a message from the transport
         /// </summary>
-        private void ReceiveMessages(ulong clientId, NetworkPipeline pipeline, DataStreamReader dataReader)
+        private void ReceiveMessages(NetworkConnection connection, NetworkPipeline pipeline, DataStreamReader dataReader)
         {
             BatchedReceiveQueue queue;
             if (pipeline == _reliableSequencedPipeline)
             {
-                if (ReliableReceiveQueues.TryGetValue(clientId, out queue))
+                if (ReliableReceiveQueues.TryGetValue(connection, out queue))
                 {
                     queue.PushReader(dataReader);
                 }
                 else
                 {
                     queue = new BatchedReceiveQueue(dataReader);
-                    ReliableReceiveQueues[clientId] = queue;
+                    ReliableReceiveQueues[connection] = queue;
                 }
             }
             else
@@ -376,19 +365,19 @@ namespace FishNet.Transporting.FishyUnityTransport
 
                 Channel channel = pipeline == _reliableSequencedPipeline ? Channel.Reliable : Channel.Unreliable;
 
-                HandleReceivedData(message, channel, clientId);
+                HandleReceivedData(message, channel, connection);
             }
         }
 
-        protected abstract void HandleReceivedData(ArraySegment<byte> message, Channel channel, ulong clientId);
+        protected abstract void HandleReceivedData(ArraySegment<byte> message, Channel channel, NetworkConnection connection);
 
-        protected void ClearSendQueuesForClientId(ulong clientId)
+        protected void ClearSendQueuesForClientId(NetworkConnection connection)
         {
             // NativeList and manual foreach avoids any allocations.
             using var keys = new NativeList<SendTarget>(16, Allocator.Temp);
             foreach (SendTarget key in _sendQueue.Keys)
             {
-                if (key.ClientId == clientId)
+                if (key.Connection == connection)
                 {
                     keys.Add(key);
                 }
@@ -401,18 +390,18 @@ namespace FishNet.Transporting.FishyUnityTransport
             }
         }
 
-        protected void FlushSendQueuesForClientId(ulong clientId)
+        protected void FlushSendQueuesForClientId(NetworkConnection connection)
         {
             foreach (var kvp in _sendQueue)
             {
-                if (kvp.Key.ClientId == clientId)
+                if (kvp.Key.Connection == connection)
                 {
                     SendBatchedMessages(kvp.Key, kvp.Value);
                 }
             }
         }
 
-        public virtual void Shutdown()
+        protected virtual void Shutdown()
         {
             if (!Driver.IsCreated)
             {
@@ -432,7 +421,7 @@ namespace FishNet.Transporting.FishyUnityTransport
             // but there might be disconnect messages and those require an update call.)
             Driver.ScheduleUpdate().Complete();
 
-            DisposeInternals();
+            Dispose();
 
             ReliableReceiveQueues.Clear();
         }
@@ -457,8 +446,10 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         #region DebugSimulator
 
+#if UTP_TRANSPORT_2_0_ABOVE 
+        [Obsolete("DebugSimulator is no longer supported and has no effect. Use Network Simulator from the Multiplayer Tools package.", false)]
+#endif
         private SimulatorParameters DebugSimulator => Transport.DebugSimulator;
-        private uint? DebugSimulatorRandomSeed => Transport.DebugSimulatorRandomSeed;
 
 #if UTP_TRANSPORT_2_0_ABOVE
         private void ConfigureSimulatorForUtp2()
@@ -471,7 +462,7 @@ namespace FishNet.Transporting.FishyUnityTransport
                 packetDelayMs: 0,
                 packetJitterMs: 0,
                 packetDropPercentage: 0,
-                randomSeed: DebugSimulatorRandomSeed ?? (uint)System.Diagnostics.Stopwatch.GetTimestamp()
+                randomSeed: Transport.DebugSimulatorRandomSeed ??= (uint)System.Diagnostics.Stopwatch.GetTimestamp()
                 , mode: ApplyMode.AllPackets
             );
 
@@ -486,7 +477,7 @@ namespace FishNet.Transporting.FishyUnityTransport
                 packetDelayMs: DebugSimulator.PacketDelayMS,
                 packetJitterMs: DebugSimulator.PacketJitterMS,
                 packetDropPercentage: DebugSimulator.PacketDropRate,
-                randomSeed: DebugSimulatorRandomSeed ?? (uint)System.Diagnostics.Stopwatch.GetTimestamp()
+                randomSeed: Transport.DebugSimulatorRandomSeed ??= (uint)System.Diagnostics.Stopwatch.GetTimestamp()
             );
         }
 #endif

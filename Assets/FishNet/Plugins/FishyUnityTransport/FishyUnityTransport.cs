@@ -1,5 +1,7 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using FishNet.Managing;
 using FishNet.Managing.Logging;
 using Unity.Networking.Transport;
@@ -19,6 +21,11 @@ namespace FishNet.Transporting.FishyUnityTransport
     [AddComponentMenu("FishNet/Transport/FishyUnityTransport")]
     public class FishyUnityTransport : Transport
     {
+        ~FishyUnityTransport()
+        {
+            Shutdown();
+        }
+
         #region Constants
 
         /// <summary>
@@ -62,7 +69,7 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         [Tooltip("Per default the client/server communication will not be encrypted. Select true to enable DTLS for UDP and TLS for Websocket.")]
         [SerializeField]
-        private bool _useEncryption = false;
+        private bool _useEncryption;
         /// <summary>
         /// Per default the client/server communication will not be encrypted. Select true to enable DTLS for UDP and TLS for Websocket.
         /// </summary>
@@ -137,7 +144,7 @@ namespace FishNet.Transporting.FishyUnityTransport
             get => _connectTimeoutMS;
             set => _connectTimeoutMS = value;
         }
-        
+
         [Tooltip("The maximum amount of connection attempts we will try before disconnecting.")]
         [SerializeField]
         private int _maxConnectAttempts = NetworkParameterConstants.MaxConnectAttempts;
@@ -189,8 +196,7 @@ namespace FishNet.Transporting.FishyUnityTransport
         [Range(1, 4095)]
         [SerializeField] private int _maximumClients = 4095;
 
-        internal uint? DebugSimulatorRandomSeed { get; set; } = null;
-
+        internal uint? DebugSimulatorRandomSeed { get; set; }
         internal RelayServerData RelayServerDataInternal;
 
         public RelayServerData RelayServerData => RelayServerDataInternal;
@@ -198,14 +204,16 @@ namespace FishNet.Transporting.FishyUnityTransport
         private readonly ServerSocket _serverSocket = new();
         private readonly ClientSocket _clientSocket = new();
 
-        #region ClientId And TransportId
+        #region Connection And TransportId
 
-        private readonly Dictionary<int, ulong> _transportIdToClientIdMap = new();
-        private readonly Dictionary<ulong, int> _clientIdToTransportIdMap = new();
+        private readonly Dictionary<int, NetworkConnection> _transportIdToClientIdMap = new();
+        private readonly Dictionary<NetworkConnection, int> _clientIdToTransportIdMap = new();
 
-        internal int ClientIdToTransportId(ulong clientId) => _clientIdToTransportIdMap[clientId];
+        internal int ConnectionToTransportId(NetworkConnection connection) => _clientIdToTransportIdMap[connection];
 
-        private ulong TransportIdToClientId(int transportId) => _transportIdToClientIdMap[transportId];
+        private NetworkConnection TransportIdToConnection(int transportId) => _transportIdToClientIdMap[transportId];
+
+        internal static int ParseTransportId(NetworkConnection connection) => connection.GetHashCode();
 
         #endregion
 
@@ -231,14 +239,14 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         #region ConnectionStates.
 
-        public override string GetConnectionAddress(int connectionId)
-        {
-            return _serverSocket.GetConnectionAddress(TransportIdToClientId(connectionId));
-        }
-
         public override event Action<ClientConnectionStateArgs> OnClientConnectionState;
         public override event Action<ServerConnectionStateArgs> OnServerConnectionState;
         public override event Action<RemoteConnectionStateArgs> OnRemoteConnectionState;
+
+        public override string GetConnectionAddress(int connectionId)
+        {
+            return _serverSocket.GetConnectionAddress(TransportIdToConnection(connectionId));
+        }
 
         public override LocalConnectionState GetConnectionState(bool server)
         {
@@ -247,7 +255,7 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         public override RemoteConnectionState GetConnectionState(int connectionId)
         {
-            return _serverSocket.GetConnectionState(TransportIdToClientId(connectionId)) == NetworkConnection.State.Connected
+            return _serverSocket.GetConnectionState(TransportIdToConnection(connectionId)) == NetworkConnection.State.Connected
                 ? RemoteConnectionState.Started
                 : RemoteConnectionState.Stopped;
         }
@@ -257,19 +265,19 @@ namespace FishNet.Transporting.FishyUnityTransport
             OnClientConnectionState?.Invoke(connectionStateArgs);
         }
 
-        internal void HandleClientConnectionState(LocalConnectionState connectionState, ulong clientId, int transportIndex)
+        internal void HandleClientConnectionState(LocalConnectionState connectionState, NetworkConnection connection, int transportIndex)
         {
-            int transportId = ParseClientIdToTransportId(clientId);
+            int transportId = ParseTransportId(connection);
 
             switch (connectionState)
             {
                 case LocalConnectionState.Started:
-                    _transportIdToClientIdMap[transportId] = clientId;
-                    _clientIdToTransportIdMap[clientId] = transportId;
+                    _transportIdToClientIdMap[transportId] = connection;
+                    _clientIdToTransportIdMap[connection] = transportId;
                     break;
                 case LocalConnectionState.Stopped:
                     _transportIdToClientIdMap.Remove(transportId);
-                    _clientIdToTransportIdMap.Remove(clientId);
+                    _clientIdToTransportIdMap.Remove(connection);
                     break;
             }
 
@@ -281,18 +289,18 @@ namespace FishNet.Transporting.FishyUnityTransport
             OnServerConnectionState?.Invoke(connectionStateArgs);
         }
 
-        internal void HandleRemoteConnectionState(RemoteConnectionState state, ulong clientId, int transportIndex)
+        internal void HandleRemoteConnectionState(RemoteConnectionState state, NetworkConnection connection, int transportIndex)
         {
-            int transportId = ParseClientIdToTransportId(clientId);
+            int transportId = ParseTransportId(connection);
             switch (state)
             {
                 case RemoteConnectionState.Started:
-                    _transportIdToClientIdMap[transportId] = clientId;
-                    _clientIdToTransportIdMap[clientId] = transportId;
+                    _transportIdToClientIdMap[transportId] = connection;
+                    _clientIdToTransportIdMap[connection] = transportId;
                     break;
                 case RemoteConnectionState.Stopped:
                     _transportIdToClientIdMap.Remove(transportId);
-                    _clientIdToTransportIdMap.Remove(clientId);
+                    _clientIdToTransportIdMap.Remove(connection);
                     break;
                 default:
                     throw new ArgumentOutOfRangeException(nameof(state), state, null);
@@ -304,11 +312,6 @@ namespace FishNet.Transporting.FishyUnityTransport
         public override void HandleRemoteConnectionState(RemoteConnectionStateArgs connectionStateArgs)
         {
             OnRemoteConnectionState?.Invoke(connectionStateArgs);
-        }
-
-        internal static int ParseClientIdToTransportId(ulong clientId)
-        {
-            return clientId.GetHashCode();
         }
 
         #endregion
@@ -338,6 +341,7 @@ namespace FishNet.Transporting.FishyUnityTransport
                 _clientSocket.IterateOutgoing();
             }
         }
+
         #endregion
 
         #region ReceivedData.
@@ -356,9 +360,9 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         public override event Action<ServerReceivedDataArgs> OnServerReceivedData;
 
-        internal void HandleServerReceivedData(ArraySegment<byte> message, Channel channel, ulong clientId, int transportIndex)
+        internal void HandleServerReceivedData(ArraySegment<byte> message, Channel channel, NetworkConnection connection, int transportIndex)
         {
-            HandleServerReceivedDataArgs(new ServerReceivedDataArgs(message, channel, ClientIdToTransportId(clientId), transportIndex));
+            HandleServerReceivedDataArgs(new ServerReceivedDataArgs(message, channel, ConnectionToTransportId(connection), transportIndex));
         }
 
         public override void HandleServerReceivedDataArgs(ServerReceivedDataArgs receivedDataArgs)
@@ -369,6 +373,7 @@ namespace FishNet.Transporting.FishyUnityTransport
         #endregion
 
         #region Sending.
+
         public override void SendToServer(byte channelId, ArraySegment<byte> segment)
         {
             if (_clientSocket.State != LocalConnectionState.Started) return;
@@ -378,8 +383,9 @@ namespace FishNet.Transporting.FishyUnityTransport
         public override void SendToClient(byte channelId, ArraySegment<byte> segment, int connectionId)
         {
             if (_serverSocket.State != LocalConnectionState.Started) return;
-            _serverSocket.Send(channelId, segment, TransportIdToClientId(connectionId));
+            _serverSocket.Send(channelId, segment, TransportIdToConnection(connectionId));
         }
+
         #endregion
 
         #region Configuration.
@@ -520,25 +526,23 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         public override bool StartConnection(bool server)
         {
-            return server ? StartServer() : StartClient();
+            return server ? _serverSocket.StartConnection() : _clientSocket.StartConnection();
         }
 
         public override bool StopConnection(bool server)
         {
-            return server ? StopServer() : StopClient();
+            return server ? _serverSocket.StopServer() : _clientSocket.StopClient();
         }
 
         public override bool StopConnection(int connectionId, bool immediately)
         {
-            return StopClient(connectionId);
+            return _serverSocket.DisconnectRemoteClient(TransportIdToConnection(connectionId));
         }
 
         public override void Shutdown()
         {
             StopConnection(false);
             StopConnection(true);
-            _serverSocket.Shutdown();
-            _clientSocket.Shutdown();
             _transportIdToClientIdMap.Clear();
             _clientIdToTransportIdMap.Clear();
         }
@@ -549,7 +553,7 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         public override int GetMTU(byte channelId)
         {
-            //Check for client activity
+            // Check for client activity
             if (_clientSocket is { State: LocalConnectionState.Started })
             {
                 return NetworkParameterConstants.MTU - _clientSocket.GetMaxHeaderSize((Channel)channelId);
@@ -561,35 +565,6 @@ namespace FishNet.Transporting.FishyUnityTransport
             }
             
             return NetworkParameterConstants.MTU;
-        }
-
-        #endregion
-
-        #region Privates.
-
-        private bool StartServer()
-        {
-            return _serverSocket.StartConnection();
-        }
-
-        private bool StopServer()
-        {
-            return _serverSocket != null && _serverSocket.StopServer();
-        }
-
-        private bool StartClient()
-        {
-            return _clientSocket.StartConnection();
-        }
-
-        private bool StopClient()
-        {
-            return _clientSocket.StopClient();
-        }
-
-        private bool StopClient(int connectionId)
-        {
-            return _serverSocket.DisconnectRemoteClient(TransportIdToClientId(connectionId));
         }
 
         #endregion
