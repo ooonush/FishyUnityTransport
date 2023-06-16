@@ -21,8 +21,8 @@ namespace FishNet.Transporting.FishyUnityTransport
         private string _serverPrivateKey;
         private string _serverCertificate;
 
-        private readonly Dictionary<int, NetworkConnection> _transportIdToClientIdMap = new();
-        private readonly Dictionary<NetworkConnection, int> _clientIdToTransportIdMap = new();
+        private readonly Dictionary<int, NetworkConnection> _transportIdToClientIdMap = new Dictionary<int, NetworkConnection>();
+        private readonly Dictionary<NetworkConnection, int> _clientIdToTransportIdMap = new Dictionary<NetworkConnection, int>();
 
         internal int ConnectionToTransportId(NetworkConnection connection) => _clientIdToTransportIdMap[connection];
 

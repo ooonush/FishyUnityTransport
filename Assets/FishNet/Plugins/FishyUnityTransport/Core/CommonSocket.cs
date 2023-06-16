@@ -39,12 +39,12 @@ namespace FishNet.Transporting.FishyUnityTransport
         /// <summary>
         /// SendQueue dictionary is used to batch events instead of sending them immediately.
         /// </summary>
-        private readonly Dictionary<SendTarget, BatchedSendQueue> _sendQueue = new();
+        private readonly Dictionary<SendTarget, BatchedSendQueue> _sendQueue = new Dictionary<SendTarget, BatchedSendQueue>();
 
         /// <summary>
         /// SendQueue dictionary is used to batch events instead of sending them immediately.
         /// </summary>
-        protected readonly Dictionary<NetworkConnection, BatchedReceiveQueue> ReliableReceiveQueues = new();
+        protected readonly Dictionary<NetworkConnection, BatchedReceiveQueue> ReliableReceiveQueues = new Dictionary<NetworkConnection, BatchedReceiveQueue>();
 
         #endregion
 
@@ -189,7 +189,7 @@ namespace FishNet.Transporting.FishyUnityTransport
         /// </summary>
         public void IterateOutgoing()
         {
-            if (State is LocalConnectionState.Stopped or LocalConnectionState.Stopping) return;
+            if (State == LocalConnectionState.Stopped || State == LocalConnectionState.Stopping) return;
 
             foreach (var kvp in _sendQueue)
             {

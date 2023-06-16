@@ -42,7 +42,7 @@ namespace FishNet.Transporting.FishyUnityTransport
         // frame at 60 FPS. This will be a large over-estimation in any realistic scenario.
         internal const int MaxReliableThroughput = NetworkParameterConstants.MTU * 32 * 60 / 1000; // bytes per millisecond
 
-        private static readonly ConnectionAddressData DefaultConnectionAddressData = new()
+        private static readonly ConnectionAddressData DefaultConnectionAddressData = new ConnectionAddressData()
         {
             Address = "127.0.0.1", Port = 7777, ServerListenAddress = string.Empty
         };
@@ -183,7 +183,7 @@ namespace FishNet.Transporting.FishyUnityTransport
 #if UTP_TRANSPORT_2_0_ABOVE 
         [Obsolete("DebugSimulator is no longer supported and has no effect. Use Network Simulator from the Multiplayer Tools package.", false)]
 #endif
-        public SimulatorParameters DebugSimulator = new()
+        public SimulatorParameters DebugSimulator = new SimulatorParameters()
         {
             PacketDelayMS = 0,
             PacketJitterMS = 0,
@@ -201,8 +201,8 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         public RelayServerData RelayServerData => RelayServerDataInternal;
 
-        private readonly ServerSocket _serverSocket = new();
-        private readonly ClientSocket _clientSocket = new();
+        private readonly ServerSocket _serverSocket = new ServerSocket();
+        private readonly ClientSocket _clientSocket = new ClientSocket();
 
         #region Initialization and unity.
 

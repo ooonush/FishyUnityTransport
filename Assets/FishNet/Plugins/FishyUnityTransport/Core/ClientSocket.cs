@@ -106,7 +106,7 @@ namespace FishNet.Transporting.FishyUnityTransport
         public bool StopClient()
         {
             LocalConnectionState state = State;
-            if (State is LocalConnectionState.Stopped or LocalConnectionState.Stopping) return false;
+            if (State == LocalConnectionState.Stopped || State == LocalConnectionState.Stopping) return false;
 
             SetLocalConnectionState(LocalConnectionState.Stopping);
 
