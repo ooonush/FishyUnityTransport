@@ -204,19 +204,6 @@ namespace FishNet.Transporting.FishyUnityTransport
         private readonly ServerSocket _serverSocket = new();
         private readonly ClientSocket _clientSocket = new();
 
-        #region Connection And TransportId
-
-        private readonly Dictionary<int, NetworkConnection> _transportIdToClientIdMap = new();
-        private readonly Dictionary<NetworkConnection, int> _clientIdToTransportIdMap = new();
-
-        internal int ConnectionToTransportId(NetworkConnection connection) => _clientIdToTransportIdMap[connection];
-
-        private NetworkConnection TransportIdToConnection(int transportId) => _transportIdToClientIdMap[transportId];
-
-        internal static int ParseTransportId(NetworkConnection connection) => connection.GetHashCode();
-
-        #endregion
-
         #region Initialization and unity.
 
         /// <summary>
@@ -245,7 +232,7 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         public override string GetConnectionAddress(int connectionId)
         {
-            return _serverSocket.GetConnectionAddress(TransportIdToConnection(connectionId));
+            return _serverSocket.GetConnectionAddress(connectionId);
         }
 
         public override LocalConnectionState GetConnectionState(bool server)
@@ -255,7 +242,7 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         public override RemoteConnectionState GetConnectionState(int connectionId)
         {
-            return _serverSocket.GetConnectionState(TransportIdToConnection(connectionId)) == NetworkConnection.State.Connected
+            return _serverSocket.GetConnectionState(connectionId) == NetworkConnection.State.Connected
                 ? RemoteConnectionState.Started
                 : RemoteConnectionState.Stopped;
         }
@@ -265,48 +252,9 @@ namespace FishNet.Transporting.FishyUnityTransport
             OnClientConnectionState?.Invoke(connectionStateArgs);
         }
 
-        internal void HandleClientConnectionState(LocalConnectionState connectionState, NetworkConnection connection, int transportIndex)
-        {
-            int transportId = ParseTransportId(connection);
-
-            switch (connectionState)
-            {
-                case LocalConnectionState.Started:
-                    _transportIdToClientIdMap[transportId] = connection;
-                    _clientIdToTransportIdMap[connection] = transportId;
-                    break;
-                case LocalConnectionState.Stopped:
-                    _transportIdToClientIdMap.Remove(transportId);
-                    _clientIdToTransportIdMap.Remove(connection);
-                    break;
-            }
-
-            HandleClientConnectionState(new ClientConnectionStateArgs(connectionState, transportIndex));
-        }
-
         public override void HandleServerConnectionState(ServerConnectionStateArgs connectionStateArgs)
         {
             OnServerConnectionState?.Invoke(connectionStateArgs);
-        }
-
-        internal void HandleRemoteConnectionState(RemoteConnectionState state, NetworkConnection connection, int transportIndex)
-        {
-            int transportId = ParseTransportId(connection);
-            switch (state)
-            {
-                case RemoteConnectionState.Started:
-                    _transportIdToClientIdMap[transportId] = connection;
-                    _clientIdToTransportIdMap[connection] = transportId;
-                    break;
-                case RemoteConnectionState.Stopped:
-                    _transportIdToClientIdMap.Remove(transportId);
-                    _clientIdToTransportIdMap.Remove(connection);
-                    break;
-                default:
-                    throw new ArgumentOutOfRangeException(nameof(state), state, null);
-            }
-
-            HandleRemoteConnectionState(new RemoteConnectionStateArgs(state, transportId, transportIndex));
         }
 
         public override void HandleRemoteConnectionState(RemoteConnectionStateArgs connectionStateArgs)
@@ -360,11 +308,6 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         public override event Action<ServerReceivedDataArgs> OnServerReceivedData;
 
-        internal void HandleServerReceivedData(ArraySegment<byte> message, Channel channel, NetworkConnection connection, int transportIndex)
-        {
-            HandleServerReceivedDataArgs(new ServerReceivedDataArgs(message, channel, ConnectionToTransportId(connection), transportIndex));
-        }
-
         public override void HandleServerReceivedDataArgs(ServerReceivedDataArgs receivedDataArgs)
         {
             OnServerReceivedData?.Invoke(receivedDataArgs);
@@ -383,7 +326,7 @@ namespace FishNet.Transporting.FishyUnityTransport
         public override void SendToClient(byte channelId, ArraySegment<byte> segment, int connectionId)
         {
             if (_serverSocket.State != LocalConnectionState.Started) return;
-            _serverSocket.Send(channelId, segment, TransportIdToConnection(connectionId));
+            _serverSocket.Send(channelId, segment, connectionId);
         }
 
         #endregion
@@ -536,15 +479,13 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         public override bool StopConnection(int connectionId, bool immediately)
         {
-            return _serverSocket.DisconnectRemoteClient(TransportIdToConnection(connectionId));
+            return _serverSocket.DisconnectRemoteClient(connectionId);
         }
 
         public override void Shutdown()
         {
             StopConnection(false);
             StopConnection(true);
-            _transportIdToClientIdMap.Clear();
-            _clientIdToTransportIdMap.Clear();
         }
 
         #endregion
@@ -558,12 +499,12 @@ namespace FishNet.Transporting.FishyUnityTransport
             {
                 return NetworkParameterConstants.MTU - _clientSocket.GetMaxHeaderSize((Channel)channelId);
             }
-            
+
             if (_serverSocket is { State: LocalConnectionState.Started })
             {
                 return NetworkParameterConstants.MTU - _serverSocket.GetMaxHeaderSize((Channel)channelId);
             }
-            
+
             return NetworkParameterConstants.MTU;
         }
 

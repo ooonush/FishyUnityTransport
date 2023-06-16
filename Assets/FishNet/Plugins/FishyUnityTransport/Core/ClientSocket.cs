@@ -20,6 +20,7 @@ namespace FishNet.Transporting.FishyUnityTransport
         private NetworkConnection _connection;
         private string _serverCommonName;
         private string _clientCaCertificate;
+        private int _transportId;
 
         /// <summary>Set the client parameters for encryption.</summary>
         /// <remarks>
@@ -50,11 +51,12 @@ namespace FishNet.Transporting.FishyUnityTransport
 
             bool succeeded = ClientBindAndConnect();
             if (succeeded) return true;
-            SetLocalConnectionState(LocalConnectionState.Stopped);
             if (Driver.IsCreated)
             {
                 Driver.Dispose();
             }
+
+            SetLocalConnectionState(LocalConnectionState.Stopped);
 
             return false;
         }
@@ -130,13 +132,13 @@ namespace FishNet.Transporting.FishyUnityTransport
             // connection attempt has failed.
             if (State == LocalConnectionState.Started)
             {
+                Shutdown();
                 SetLocalConnectionState(LocalConnectionState.Stopped);
-                _connection = default;
             }
             else if (State == LocalConnectionState.Stopped)
             {
                 Debug.LogError("Failed to connect to server.");
-                _connection = default;
+                Shutdown();
             }
         }
 
@@ -149,10 +151,16 @@ namespace FishNet.Transporting.FishyUnityTransport
         protected override void SetLocalConnectionState(LocalConnectionState state)
         {
             State = state;
-            if (Transport)
+            if (!Transport) return;
+
+            _transportId = state switch
             {
-                Transport.HandleClientConnectionState(state, _connection, Transport.Index);
-            }
+                LocalConnectionState.Started => ParseTransportId(_connection),
+                LocalConnectionState.Stopped => 0,
+                _ => _transportId
+            };
+
+            Transport.HandleClientConnectionState(new ClientConnectionStateArgs(state, Transport.Index));
         }
 
         protected override void OnPushMessageFailure(int channelId, ArraySegment<byte> payload, NetworkConnection connection)

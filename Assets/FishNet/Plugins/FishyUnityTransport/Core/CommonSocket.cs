@@ -76,6 +76,51 @@ namespace FishNet.Transporting.FishyUnityTransport
 #endif
         }
 
+        protected void InitDriver(bool asServer)
+        {
+            CreateDriver(Transport, out Driver,
+                out _unreliableFragmentedPipeline,
+                out _unreliableSequencedFragmentedPipeline,
+                out _reliableSequencedPipeline, asServer);
+        }
+
+        protected static int ParseTransportId(NetworkConnection connection) => connection.GetHashCode();
+
+        protected abstract void SetLocalConnectionState(LocalConnectionState state);
+
+        protected abstract void OnPushMessageFailure(int channelId, ArraySegment<byte> payload, NetworkConnection connection);
+
+        protected abstract void HandleReceivedData(ArraySegment<byte> message, Channel channel, NetworkConnection connection);
+
+        protected virtual void OnIterateIncoming() { }
+
+        protected virtual void HandleDisconnectEvent(NetworkConnection connection) { }
+
+        protected virtual void Shutdown()
+        {
+            if (!Driver.IsCreated)
+            {
+                return;
+            }
+
+            // Flush all send queues to the network. NGO can be configured to flush its message
+            // queue on shutdown. But this only calls the Send() method, which doesn't actually
+            // get anything to the network.
+            foreach (var kvp in _sendQueue)
+            {
+                SendBatchedMessages(kvp.Key, kvp.Value);
+            }
+
+            // The above flush only puts the message in UTP internal buffers, need an update to
+            // actually get the messages on the wire. (Normally a flush send would be sufficient,
+            // but there might be disconnect messages and those require an update call.)
+            Driver.ScheduleUpdate().Complete();
+
+            Dispose();
+
+            ReliableReceiveQueues.Clear();
+        }
+
         #region Iterate Incoming
 
         /// <summary>
@@ -98,29 +143,17 @@ namespace FishNet.Transporting.FishyUnityTransport
                 return;
             }
 
-            while (AcceptConnection() && Driver.IsCreated) { }
             while (ProcessEvent() && Driver.IsCreated) { }
+
+            OnIterateIncoming();
         }
 
-        private bool AcceptConnection()
-        {
-            NetworkConnection connection = Driver.Accept();
-
-            if (connection == default)
-            {
-                return false;
-            }
-
-            Transport.HandleRemoteConnectionState(RemoteConnectionState.Started, connection, Transport.Index);
-
-            return true;
-        }
-
-        protected virtual void HandleDisconnectEvent(NetworkConnection connection) { }
+        #endregion
 
         private bool ProcessEvent()
         {
-            NetworkEvent.Type eventType = Driver.PopEvent(out NetworkConnection networkConnection, out DataStreamReader reader, out NetworkPipeline pipeline);
+            NetworkEvent.Type eventType = Driver.PopEvent(out NetworkConnection connection, out DataStreamReader reader,
+                out NetworkPipeline pipeline);
             switch (eventType)
             {
                 case NetworkEvent.Type.Connect:
@@ -130,26 +163,26 @@ namespace FishNet.Transporting.FishyUnityTransport
                 }
                 case NetworkEvent.Type.Disconnect:
                 {
-                    ReliableReceiveQueues.Remove(networkConnection);
-                    ClearSendQueuesForClientId(networkConnection);
+                    ReliableReceiveQueues.Remove(connection);
+                    ClearSendQueuesForClientId(connection);
 
-                    HandleDisconnectEvent(networkConnection);
+                    HandleDisconnectEvent(connection);
 
                     return true;
                 }
                 case NetworkEvent.Type.Data:
                 {
-                    ReceiveMessages(networkConnection, pipeline, reader);
+                    ReceiveMessages(connection, pipeline, reader);
                     return true;
                 }
+                case NetworkEvent.Type.Empty:
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException();
             }
 
             return false;
         }
-
-        #endregion
-
-        protected abstract void SetLocalConnectionState(LocalConnectionState state);
 
         /// <summary>
         /// Processes data to be sent by the socket.
@@ -194,7 +227,7 @@ namespace FishNet.Transporting.FishyUnityTransport
         /// <summary>
         /// Sends a message via the transport
         /// </summary>
-        public void Send(int channelId, ArraySegment<byte> payload, NetworkConnection connection)
+        protected void Send(int channelId, ArraySegment<byte> payload, NetworkConnection connection)
         {
             if (State != LocalConnectionState.Started) return;
 
@@ -239,7 +272,7 @@ namespace FishNet.Transporting.FishyUnityTransport
                     // this point they're bound to become desynchronized.
 
                     Debug.LogError($"Couldn't add payload of size {payload.Count} to reliable send queue. " +
-                                   $"Closing connection {Transport.ConnectionToTransportId(connection)} as reliability guarantees can't be maintained.");
+                                   $"Closing connection {connection} as reliability guarantees can't be maintained.");
 
                     OnPushMessageFailure(channelId, payload, connection);
                 }
@@ -258,8 +291,6 @@ namespace FishNet.Transporting.FishyUnityTransport
                 }
             }
         }
-
-        protected abstract void OnPushMessageFailure(int channelId, ArraySegment<byte> payload, NetworkConnection connection);
 
         /// <summary>
         /// Send all queued messages
@@ -294,7 +325,7 @@ namespace FishNet.Transporting.FishyUnityTransport
 
                     if ((StatusCode)result != StatusCode.Success)
                     {
-                        Debug.LogError($"Error sending the message to client {FishyUnityTransport.ParseTransportId(connection)} with code: {(StatusCode)result}");
+                        Debug.LogError($"Error sending the message to client {ParseTransportId(connection)} with code: {result}");
                         return;
                     }
 
@@ -321,7 +352,7 @@ namespace FishNet.Transporting.FishyUnityTransport
                         // just get the same error again).
                         if ((StatusCode)result != StatusCode.NetworkSendQueueFull)
                         {
-                            Debug.LogError($"Error sending the message to client {FishyUnityTransport.ParseTransportId(connection)} with code: {(StatusCode)result}");
+                            Debug.LogError($"Error sending the message to client {ParseTransportId(connection)} with code: {(StatusCode)result}");
                             Queue.Consume(written);
                         }
 
@@ -369,8 +400,6 @@ namespace FishNet.Transporting.FishyUnityTransport
             }
         }
 
-        protected abstract void HandleReceivedData(ArraySegment<byte> message, Channel channel, NetworkConnection connection);
-
         protected void ClearSendQueuesForClientId(NetworkConnection connection)
         {
             // NativeList and manual foreach avoids any allocations.
@@ -401,31 +430,6 @@ namespace FishNet.Transporting.FishyUnityTransport
             }
         }
 
-        protected virtual void Shutdown()
-        {
-            if (!Driver.IsCreated)
-            {
-                return;
-            }
-
-            // Flush all send queues to the network. NGO can be configured to flush its message
-            // queue on shutdown. But this only calls the Send() method, which doesn't actually
-            // get anything to the network.
-            foreach (var kvp in _sendQueue)
-            {
-                SendBatchedMessages(kvp.Key, kvp.Value);
-            }
-
-            // The above flush only puts the message in UTP internal buffers, need an update to
-            // actually get the messages on the wire. (Normally a flush send would be sufficient,
-            // but there might be disconnect messages and those require an update call.)
-            Driver.ScheduleUpdate().Complete();
-
-            Dispose();
-
-            ReliableReceiveQueues.Clear();
-        }
-
         private NetworkPipeline SelectSendPipeline(Channel channel)
         {
             return channel switch
@@ -434,14 +438,6 @@ namespace FishNet.Transporting.FishyUnityTransport
                 Channel.Reliable => _reliableSequencedPipeline,
                 _ => throw new ArgumentOutOfRangeException(nameof(channel), channel, null)
             };
-        }
-
-        protected void InitDriver(bool asServer)
-        {
-            CreateDriver(Transport, out Driver,
-                out _unreliableFragmentedPipeline,
-                out _unreliableSequencedFragmentedPipeline,
-                out _reliableSequencedPipeline, asServer);
         }
 
         #region DebugSimulator
