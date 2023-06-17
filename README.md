@@ -17,7 +17,7 @@ Make sure you have the following packages installed:
 ## Setting Up
 1. Install Fish-Net from the **[official repo](https://github.com/FirstGearGames/FishNet/releases)** or **[Asset Store](https://assetstore.unity.com/packages/tools/network/fish-net-networking-evolved-207815)**.
 2. Install **[UnityTransport](https://docs-multiplayer.unity3d.com/transport/current/install)** package.
-3. Install FishyUnityTransport **[unitypackage](https://github.com/ooonush/FishyUnityTransport/releases)** from the release section.
+3. Install FishyUnityTransport **[unitypackage](https://github.com/ooonush/FishyUnityTransport/releases)** from the release section or using the Git URL: `https://github.com/ooonush/FishyUnityTransport.git?path=Assets/FishNet/Plugins/FishyUnityTransport`.
 4. Add the **"FishyUnityTransport"** component to your **"NetworkManager"**.
 
 ## Unity Relay support
