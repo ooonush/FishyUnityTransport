@@ -7,13 +7,7 @@
         "GUID:f2d49d9fa7e7eb3418e39723a7d3b92f",
         "GUID:2665a8d13d1b3f18800f46e256720795"
     ],
-    "includePlatforms": [],
-    "excludePlatforms": [],
     "allowUnsafeCode": true,
-    "overrideReferences": false,
-    "precompiledReferences": [],
-    "autoReferenced": true,
-    "defineConstraints": [],
     "versionDefines": [
         {
             "name": "com.unity.transport",

@@ -249,7 +249,7 @@ namespace FishNet.Transporting.FishyUnityTransport.BatchedQueue
                     {
                         writer.WriteInt(messageLength);
 
-                        var messageOffset = HeadIndex + reader.GetBytesRead();
+                        var messageOffset = reader.GetBytesRead();
                         WriteBytes(ref writer, (byte*)m_Data.GetUnsafePtr() + messageOffset, messageLength);
 
                         writerAvailable -= sizeof(int) + messageLength;
