@@ -753,14 +753,14 @@ namespace FishNet.Transporting.FishyUnityTransport
             }
         }
 
-        private static unsafe ulong ParseClientId(NetworkConnection utpConnectionId)
+        private static unsafe ulong ParseClientId(NetworkConnection connection)
         {
-            return *(ulong*)&utpConnectionId;
+            return *(ulong*)&connection;
         }
 
-        private static unsafe NetworkConnection ParseClientId(ulong netcodeConnectionId)
+        private static unsafe NetworkConnection ParseClientId(ulong clientId)
         {
-            return *(NetworkConnection*)&netcodeConnectionId;
+            return *(NetworkConnection*)&clientId;
         }
 
         private void ClearSendQueuesForClientId(ulong clientId)
@@ -807,8 +807,6 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         private void InitializeNetworkSettings()
         {
-            Debug.Assert(sizeof(ulong) == UnsafeUtility.SizeOf<NetworkConnection>(), "Netcode connection id size does not match UTP connection id size");
-
             m_NetworkSettings = new NetworkSettings(Allocator.Persistent);
 
             // If the user sends a message of exactly m_MaxPayloadSize in length, we need to
@@ -816,9 +814,6 @@ namespace FishNet.Transporting.FishyUnityTransport
             var fragmentationCapacity = m_MaxPayloadSize + BatchedSendQueue.PerMessageOverhead;
             m_NetworkSettings.WithFragmentationStageParameters(payloadCapacity: fragmentationCapacity);
 
-            // Bump the reliable window size to its maximum size of 64. Since NGO makes heavy use of
-            // reliable delivery, we're better off with the increased window size compared to the
-            // extra 4 bytes of header that this costs us.
             m_NetworkSettings.WithReliableStageParameters(windowSize: 64);
 
 #if !UTP_TRANSPORT_2_0_ABOVE && !UNITY_WEBGL
@@ -875,9 +870,8 @@ namespace FishNet.Transporting.FishyUnityTransport
                     // provide any reliability guarantees anymore. Disconnect the client since at
                     // this point they're bound to become desynchronized.
 
-                    var ngoClientId = TransportIdToClientId(clientId);
                     Debug.LogError($"Couldn't add payload of size {payload.Count} to reliable send queue. " +
-                        $"Closing connection {ngoClientId} as reliability guarantees can't be maintained.");
+                        $"Closing connection {TransportIdToClientId(clientId)} as reliability guarantees can't be maintained.");
 
                     if (clientId == m_ServerClientId)
                     {
@@ -913,9 +907,7 @@ namespace FishNet.Transporting.FishyUnityTransport
         {
             if (m_Driver.IsCreated)
             {
-                // Flush all send queues to the network. NGO can be configured to flush its message
-                // queue on shutdown. But this only calls the Send() method, which doesn't actually
-                // get anything to the network.
+                // Flush all send queues to the network.
                 foreach (var kvp in m_SendQueue)
                 {
                     SendBatchedMessages(kvp.Key, kvp.Value);
