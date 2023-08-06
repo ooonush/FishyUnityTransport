@@ -903,7 +903,7 @@ namespace FishNet.Transporting.FishyUnityTransport
         /// <summary>
         /// Shuts down the transport
         /// </summary>
-        public override void Shutdown()
+        private void Disconnect()
         {
             if (m_Driver.IsCreated)
             {

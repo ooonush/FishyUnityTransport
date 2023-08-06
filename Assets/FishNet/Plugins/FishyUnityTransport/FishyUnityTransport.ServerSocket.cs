@@ -25,6 +25,28 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         private ulong ClientIdToTransportId(int transportId) => m_TransportIdToClientIdMap[transportId];
 
+        private void HandleRemoteConnectionState(RemoteConnectionState state, ulong clientId)
+        {
+            int transportId;
+            switch (state)
+            {
+                case RemoteConnectionState.Started:
+                    transportId = m_NextClientId++;
+                    m_TransportIdToClientIdMap[transportId] = clientId;
+                    m_ClientIdToTransportIdMap[clientId] = transportId;
+                    break;
+                case RemoteConnectionState.Stopped:
+                    transportId = m_ClientIdToTransportIdMap[clientId];
+                    m_TransportIdToClientIdMap.Remove(transportId);
+                    m_ClientIdToTransportIdMap.Remove(clientId);
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(state), state, null);
+            }
+
+            HandleRemoteConnectionState(new RemoteConnectionStateArgs(state, transportId, Index));
+        }
+
         private void SetServerConnectionState(LocalConnectionState state)
         {
             m_ServerState = state;
@@ -125,8 +147,13 @@ namespace FishNet.Transporting.FishyUnityTransport
                 return false;
             }
 
+            if (m_ClientState == LocalConnectionState.Starting || m_ClientState == LocalConnectionState.Started)
+            {
+                StopClientHost();
+            }
+
             SetServerConnectionState(LocalConnectionState.Stopping);
-            Shutdown();
+            Disconnect();
             m_NextClientId = 1;
             m_TransportIdToClientIdMap.Clear();
             m_ClientIdToTransportIdMap.Clear();
@@ -160,27 +187,5 @@ namespace FishNet.Transporting.FishyUnityTransport
 
             return false;
         }
-
-        private void HandleRemoteConnectionState(RemoteConnectionState state, ulong clientId)
-        {
-            int transportId;
-            switch (state)
-            {
-                case RemoteConnectionState.Started:
-                    transportId = m_NextClientId++;
-                    m_TransportIdToClientIdMap[transportId] = clientId;
-                    m_ClientIdToTransportIdMap[clientId] = transportId;
-                    break;
-                case RemoteConnectionState.Stopped:
-                    transportId = m_ClientIdToTransportIdMap[clientId];
-                    m_TransportIdToClientIdMap.Remove(transportId);
-                    m_ClientIdToTransportIdMap.Remove(clientId);
-                    break;
-                default:
-                    throw new ArgumentOutOfRangeException(nameof(state), state, null);
-            }
-
-            HandleRemoteConnectionState(new RemoteConnectionStateArgs(state, transportId, Index));
-        } 
     }
 }

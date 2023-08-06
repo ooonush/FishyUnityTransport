@@ -16,8 +16,7 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         private void OnDestroy()
         {
-            StopClient();
-            StopServer();
+            Shutdown();
         }
 
         public override string GetConnectionAddress(int connectionId)
@@ -73,11 +72,7 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         public override void IterateOutgoing(bool server)
         {
-            if (server)
-            {
-                IterateOutgoing();
-            }
-            else if (m_ServerState != LocalConnectionState.Started)
+            if (server || m_ServerState != LocalConnectionState.Started)
             {
                 IterateOutgoing();
             }
@@ -174,19 +169,19 @@ namespace FishNet.Transporting.FishyUnityTransport
 
         public override bool StopConnection(bool server)
         {
-            if (server)
-            {
-                StopClient();
-                return StopServer();
-            }
-
-            return StopClient();
+            return server ? StopServer() : StopClient();
         }
 
         public override bool StopConnection(int connectionId, bool immediately)
         {
             ulong transportId = ClientIdToTransportId(connectionId);
             return transportId == m_ServerClientId ? StopClientHost() : DisconnectRemoteClient(transportId);
+        }
+
+        public override void Shutdown()
+        {
+            StopConnection(false);
+            StopConnection(true);
         }
 
         public override int GetMTU(byte channelId)

@@ -121,7 +121,7 @@ namespace FishNet.Transporting.FishyUnityTransport
             }
 
             DisconnectLocalClient();
-            Shutdown();
+            Disconnect();
 
             return true;
         }
