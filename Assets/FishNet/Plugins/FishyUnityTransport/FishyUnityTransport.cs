@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using FishNet.Transporting.FishyUnityTransport.BatchedQueue;
 using UnityEngine;
 using Networking = Unity.Networking;
 using TransportNetworkEvent = Unity.Networking.Transport.NetworkEvent;
@@ -19,7 +18,7 @@ using Unity.Networking.Transport.TLS;
 using NetworkEndpoint = Unity.Networking.Transport.NetworkEndPoint;
 #endif
 
-namespace FishNet.Transporting.FishyUnityTransport
+namespace FishNet.Transporting.UTP
 {
     [DisallowMultipleComponent]
     [AddComponentMenu("FishNet/Transport/FishyUnityTransport")]

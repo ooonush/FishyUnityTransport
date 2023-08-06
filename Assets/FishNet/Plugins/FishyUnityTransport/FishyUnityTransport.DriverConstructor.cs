@@ -1,7 +1,7 @@
 ﻿using Unity.Networking.Transport;
 using Unity.Networking.Transport.Utilities;
 
-namespace FishNet.Transporting.FishyUnityTransport
+namespace FishNet.Transporting.UTP
 {
     /// <summary>
     /// Provides an interface that overrides the ability to create your own drivers and pipelines

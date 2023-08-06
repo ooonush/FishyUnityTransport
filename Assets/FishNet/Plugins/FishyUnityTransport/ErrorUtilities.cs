@@ -1,6 +1,6 @@
 ﻿using Unity.Collections;
 
-namespace FishNet.Transporting.FishyUnityTransport
+namespace FishNet.Transporting.UTP
 {
     /// <summary>
     /// Helper utility class to convert <see cref="Transport"/> error codes to human readable error messages.

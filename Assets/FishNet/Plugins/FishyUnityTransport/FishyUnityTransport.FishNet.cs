@@ -3,7 +3,7 @@ using FishNet.Managing.Logging;
 using Unity.Networking.Transport;
 using UnityEngine;
 
-namespace FishNet.Transporting.FishyUnityTransport
+namespace FishNet.Transporting.UTP
 {
     public partial class FishyUnityTransport
     {

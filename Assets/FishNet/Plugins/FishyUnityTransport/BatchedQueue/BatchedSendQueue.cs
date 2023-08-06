@@ -26,7 +26,7 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Networking.Transport;
 
-namespace FishNet.Transporting.FishyUnityTransport.BatchedQueue
+namespace FishNet.Transporting.UTP
 {
     /// <summary>Queue for batched messages meant to be sent through UTP.</summary>
     /// <remarks>

@@ -12,7 +12,7 @@ using Unity.Networking.Transport.TLS;
 using NetworkEndpoint = Unity.Networking.Transport.NetworkEndPoint;
 #endif
 
-namespace FishNet.Transporting.FishyUnityTransport
+namespace FishNet.Transporting.UTP
 {
     public partial class FishyUnityTransport
     {
