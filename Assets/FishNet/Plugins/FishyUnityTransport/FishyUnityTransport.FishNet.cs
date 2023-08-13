@@ -186,13 +186,6 @@ namespace FishNet.Transporting.UTP
 
         public override int GetMTU(byte channelId)
         {
-            // Check for client activity
-            if (m_ClientState == LocalConnectionState.Started || m_ServerState == LocalConnectionState.Started)
-            {
-                NetworkPipeline pipeline = SelectSendPipeline((Channel)channelId);
-                return NetworkParameterConstants.MTU - m_Driver.MaxHeaderSize(pipeline);
-            }
-
             return NetworkParameterConstants.MTU;
         }
 
