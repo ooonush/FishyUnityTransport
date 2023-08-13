@@ -8,7 +8,7 @@ The FishyUnityTransport library API is close to **[UnityTransport for NGO](https
 
 ## Dependencies
 Make sure you have the following packages installed:
-1. **[UnityTransport](https://docs-multiplayer.unity3d.com/transport/current/install)**
+1. **[UnityTransport](https://docs-multiplayer.unity3d.com/transport/current/install) 1.3.1 or newer**
 2. **[Fish-Net](https://github.com/FirstGearGames/FishNet)**
 
 ## Setting Up
