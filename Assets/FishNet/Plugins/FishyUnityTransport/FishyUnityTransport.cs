@@ -617,6 +617,7 @@ namespace FishNet.Transporting.UTP
                 queue = new BatchedReceiveQueue(dataReader);
             }
 
+            Channel channel = SelectSendChannel(pipeline);
             while (!queue.IsEmpty)
             {
                 var message = queue.PopMessage();
@@ -626,7 +627,6 @@ namespace FishNet.Transporting.UTP
                     break;
                 }
 
-                Channel channel = SelectSendChannel(pipeline);
                 if (m_ServerState == LocalConnectionState.Started)
                 {
                     int connectionId = TransportIdToClientId(clientId);
