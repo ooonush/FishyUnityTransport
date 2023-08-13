@@ -666,9 +666,7 @@ namespace FishNet.Transporting.UTP
                     else
                     {
                         SetClientConnectionState(LocalConnectionState.Stopping);
-                        m_ServerClientId = default;
-                        m_ReliableReceiveQueues.Remove(clientId);
-                        ClearSendQueuesForClientId(clientId);
+                        DisposeInternals();
                         SetClientConnectionState(LocalConnectionState.Stopped);
                     }
 
