@@ -177,12 +177,15 @@ namespace FishNet.Transporting.UTP
                 m_ReliableReceiveQueues.Remove(clientId);
                 ClearSendQueuesForClientId(clientId);
 
-                var connection = ParseClientId(clientId);
+                // The server can disconnect the client at any time, even during ProcessEvent(), which can cause errors because the client still has Network Events.
+                // This workaround simply clears the Event queue for the client.
+                NetworkConnection connection = ParseClientId(clientId);
                 if (m_Driver.GetConnectionState(connection) != NetworkConnection.State.Disconnected)
                 {
                     m_Driver.Disconnect(connection);
-                    return true;
+                    while (m_Driver.PopEventForConnection(connection, out var _) != NetworkEvent.Type.Empty) { }
                 }
+                HandleRemoteConnectionState(RemoteConnectionState.Stopped, clientId);
             }
 
             return false;
