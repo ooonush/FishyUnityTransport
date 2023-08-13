@@ -1,5 +1,9 @@
 ﻿using Unity.Networking.Transport;
 using Unity.Networking.Transport.Utilities;
+#if UTP_TRANSPORT_2_0_ABOVE
+using System;
+using Unity.Networking.Transport.TLS;
+#endif
 
 namespace FishNet.Transporting.UTP
 {
