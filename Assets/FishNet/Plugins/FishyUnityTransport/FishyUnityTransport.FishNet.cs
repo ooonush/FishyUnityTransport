@@ -21,15 +21,40 @@ namespace FishNet.Transporting.UTP
 
         public override string GetConnectionAddress(int connectionId)
         {
-            ulong transportId = ClientIdToTransportId(connectionId);
-            NetworkConnection connection = ParseClientId(transportId);
-            return connection.GetState(m_Driver) == NetworkConnection.State.Disconnected
-                ? string.Empty
+            bool isServer = m_ServerState == LocalConnectionState.Started;
+            bool isClient = m_ClientState == LocalConnectionState.Started;
+            
+            if (isServer)
+            {
+                ulong transportId = ClientIdToTransportId(connectionId);
+                if (isClient && transportId == k_ClientHostId)
+                {
+                    return GetLocalEndPoint().Address;
+                }
+                NetworkConnection connection = ParseClientId(transportId);
+                return connection.GetState(m_Driver) == NetworkConnection.State.Disconnected
+                    ? string.Empty
 #if UTP_TRANSPORT_2_0_ABOVE
-                : m_Driver.GetRemoteEndpoint(connection).Address;
+                    : m_Driver.GetRemoteEndpoint(connection).Address;
 #else
-                : m_Driver.RemoteEndPoint(connection).Address;
+                    : m_Driver.RemoteEndPoint(connection).Address;
 #endif
+            }
+
+            if (isClient && NetworkManager.ClientManager.Connection.ClientId == connectionId)
+            {
+                return GetLocalEndPoint().Address;
+            }
+            return string.Empty;
+            
+            NetworkEndPoint GetLocalEndPoint()
+            {
+#if UTP_TRANSPORT_2_0_ABOVE
+            return m_Driver.GetLocalEndPoint();
+#else
+                return m_Driver.LocalEndPoint();
+#endif
+            }
         }
 
         public override LocalConnectionState GetConnectionState(bool server)
