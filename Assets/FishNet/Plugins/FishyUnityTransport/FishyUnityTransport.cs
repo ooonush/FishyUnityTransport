@@ -1,7 +1,9 @@
+using FishNet.Managing.Logging;
+using FishNet.Utility.Performance;
+using Networking = Unity.Networking;
 using System;
 using System.Collections.Generic;
 using UnityEngine;
-using Networking = Unity.Networking;
 using TransportNetworkEvent = Unity.Networking.Transport.NetworkEvent;
 using Unity.Burst;
 using Unity.Collections.LowLevel.Unsafe;
@@ -20,9 +22,81 @@ using NetworkEndpoint = Unity.Networking.Transport.NetworkEndPoint;
 
 namespace FishNet.Transporting.UTP
 {
+    /// <summary>
+    /// Provides an interface that overrides the ability to create your own drivers and pipelines
+    /// </summary>
+    public interface INetworkStreamDriverConstructor
+    {
+        /// <summary>
+        /// Creates the internal NetworkDriver
+        /// </summary>
+        /// <param name="transport">The owner transport</param>
+        /// <param name="driver">The driver</param>
+        /// <param name="unreliableFragmentedPipeline">The UnreliableFragmented NetworkPipeline</param>
+        /// <param name="unreliableSequencedFragmentedPipeline">The UnreliableSequencedFragmented NetworkPipeline</param>
+        /// <param name="reliableSequencedPipeline">The ReliableSequenced NetworkPipeline</param>
+        void CreateDriver(
+            FishyUnityTransport transport,
+            out NetworkDriver driver,
+            out NetworkPipeline unreliableFragmentedPipeline,
+            out NetworkPipeline unreliableSequencedFragmentedPipeline,
+            out NetworkPipeline reliableSequencedPipeline);
+    }
+
+    /// <summary>
+    /// Helper utility class to convert <see cref="Networking.Transport"/> error codes to human readable error messages.
+    /// </summary>
+    public static class ErrorUtilities
+    {
+        private static readonly FixedString128Bytes k_NetworkSuccess = "Success";
+        private static readonly FixedString128Bytes k_NetworkIdMismatch = "Invalid connection ID {0}.";
+        private static readonly FixedString128Bytes k_NetworkVersionMismatch = "Connection ID is invalid. Likely caused by sending on stale connection {0}.";
+        private static readonly FixedString128Bytes k_NetworkStateMismatch = "Connection state is invalid. Likely caused by sending on connection {0} which is stale or still connecting.";
+        private static readonly FixedString128Bytes k_NetworkPacketOverflow = "Packet is too large to be allocated by the transport.";
+        private static readonly FixedString128Bytes k_NetworkSendQueueFull = "Unable to queue packet in the transport. Likely caused by send queue size ('Max Send Queue Size') being too small.";
+
+        /// <summary>
+        /// Convert a UTP error code to human-readable error message.
+        /// </summary>
+        /// <param name="error">UTP error code.</param>
+        /// <param name="connectionId">ID of the connection on which the error occurred.</param>
+        /// <returns>Human-readable error message.</returns>
+        public static string ErrorToString(Networking.Transport.Error.StatusCode error, ulong connectionId)
+        {
+            return ErrorToString((int)error, connectionId);
+        }
+
+        internal static string ErrorToString(int error, ulong connectionId)
+        {
+            return ErrorToFixedString(error, connectionId).ToString();
+        }
+
+        internal static FixedString128Bytes ErrorToFixedString(int error, ulong connectionId)
+        {
+            switch ((Networking.Transport.Error.StatusCode)error)
+            {
+                case Networking.Transport.Error.StatusCode.Success:
+                    return k_NetworkSuccess;
+                case Networking.Transport.Error.StatusCode.NetworkIdMismatch:
+                    return FixedString.Format(k_NetworkIdMismatch, connectionId);
+                case Networking.Transport.Error.StatusCode.NetworkVersionMismatch:
+                    return FixedString.Format(k_NetworkVersionMismatch, connectionId);
+                case Networking.Transport.Error.StatusCode.NetworkStateMismatch:
+                    return FixedString.Format(k_NetworkStateMismatch, connectionId);
+                case Networking.Transport.Error.StatusCode.NetworkPacketOverflow:
+                    return k_NetworkPacketOverflow;
+                case Networking.Transport.Error.StatusCode.NetworkSendQueueFull:
+                    return k_NetworkSendQueueFull;
+                default:
+                    return FixedString.Format("Unknown error code {0}.", error);
+            }
+        }
+    }
+
+
     [DisallowMultipleComponent]
     [AddComponentMenu("FishNet/Transport/FishyUnityTransport")]
-    public partial class FishyUnityTransport : Transport, INetworkStreamDriverConstructor
+    public class FishyUnityTransport : Transport, INetworkStreamDriverConstructor
     {
         /// <summary>
         /// Enum type stating the type of protocol
@@ -42,12 +116,12 @@ namespace FishNet.Transporting.UTP
         /// <summary>
         /// The default maximum (receive) packet queue size
         /// </summary>
-        private const int InitialMaxPacketQueueSize = 128;
+        public const int InitialMaxPacketQueueSize = 128;
 
         /// <summary>
         /// The default maximum payload size
         /// </summary>
-        private const int InitialMaxPayloadSize = 6 * 1024;
+        public const int InitialMaxPayloadSize = 6 * 1024;
 
         // Maximum reliable throughput, assuming the full reliable window can be sent on every
         // frame at 60 FPS. This will be a large over-estimation in any realistic scenario.
@@ -355,7 +429,7 @@ namespace FishNet.Transporting.UTP
 
             m_NetworkSettings.Dispose();
 
-            foreach (BatchedSendQueue queue in m_SendQueue.Values)
+            foreach (var queue in m_SendQueue.Values)
             {
                 queue.Dispose();
             }
@@ -370,14 +444,85 @@ namespace FishNet.Transporting.UTP
             {
                 case Channel.Unreliable:
                     return m_UnreliableFragmentedPipeline;
-
                 case Channel.Reliable:
                     return m_ReliableSequencedPipeline;
-
                 default:
                     Debug.LogError($"Unknown {nameof(Channel)} value: {channel}");
                     return NetworkPipeline.Null;
             }
+        }
+
+        private bool ClientBindAndConnect()
+        {
+            var serverEndpoint = default(NetworkEndpoint);
+
+            if (m_ProtocolType == ProtocolType.RelayUnityTransport)
+            {
+                //This comparison is currently slow since RelayServerData does not implement a custom comparison operator that doesn't use
+                //reflection, but this does not live in the context of a performance-critical loop, it runs once at initial connection time.
+                if (m_RelayServerData.Equals(default(RelayServerData)))
+                {
+                    Debug.LogError("You must call SetRelayServerData() at least once before calling StartClient.");
+                    return false;
+                }
+
+                m_NetworkSettings.WithRelayParameters(ref m_RelayServerData, m_HeartbeatTimeoutMS);
+                serverEndpoint = m_RelayServerData.Endpoint;
+            }
+            else
+            {
+                serverEndpoint = ConnectionData.ServerEndPoint;
+            }
+
+            // Verify the endpoint is valid before proceeding
+            if (serverEndpoint.Family == NetworkFamily.Invalid)
+            {
+                Debug.LogError($"Target server network address ({ConnectionData.Address}) is {nameof(NetworkFamily.Invalid)}!");
+                return false;
+            }
+
+            InitDriver();
+
+            var bindEndpoint = serverEndpoint.Family == NetworkFamily.Ipv6 ? NetworkEndpoint.AnyIpv6 : NetworkEndpoint.AnyIpv4;
+            int result = m_Driver.Bind(bindEndpoint);
+            if (result != 0)
+            {
+                Debug.LogError("Client failed to bind");
+                return false;
+            }
+
+            var serverConnection = m_Driver.Connect(serverEndpoint);
+            m_ServerClientId = ParseClientId(serverConnection);
+
+            return true;
+        }
+
+        private bool ServerBindAndListen(NetworkEndpoint endPoint)
+        {
+            // Verify the endpoint is valid before proceeding
+            if (endPoint.Family == NetworkFamily.Invalid)
+            {
+                Debug.LogError($"Network listen address ({ConnectionData.Address}) is {nameof(NetworkFamily.Invalid)}!");
+                return false;
+            }
+
+            InitDriver();
+
+            int result = m_Driver.Bind(endPoint);
+            if (result != 0)
+            {
+                Debug.LogError("Server failed to bind. This is usually caused by another process being bound to the same port.");
+                return false;
+            }
+
+            result = m_Driver.Listen();
+            if (result != 0)
+            {
+                Debug.LogError("Server failed to listen.");
+                return false;
+            }
+
+            return true;
         }
 
         private void SetProtocol(ProtocolType inProtocol)
@@ -396,7 +541,8 @@ namespace FishNet.Transporting.UTP
         public void SetRelayServerData(string ipv4Address, ushort port, byte[] allocationIdBytes, byte[] keyBytes, byte[] connectionDataBytes, byte[] hostConnectionDataBytes = null, bool isSecure = false)
         {
             var hostConnectionData = hostConnectionDataBytes ?? connectionDataBytes;
-            SetRelayServerData(new RelayServerData(ipv4Address, port, allocationIdBytes, connectionDataBytes, hostConnectionData, keyBytes, isSecure));
+            m_RelayServerData = new RelayServerData(ipv4Address, port, allocationIdBytes, connectionDataBytes, hostConnectionData, keyBytes, isSecure);
+            SetProtocol(ProtocolType.RelayUnityTransport);
         }
 
         /// <summary>Set the relay server data (using the lower-level Unity Transport data structure).</summary>
@@ -502,6 +648,22 @@ namespace FishNet.Transporting.UTP
                 PacketJitterMS = packetJitter,
                 PacketDropRate = dropRate
             };
+        }
+
+        private bool StartRelayServer()
+        {
+            //This comparison is currently slow since RelayServerData does not implement a custom comparison operator that doesn't use
+            //reflection, but this does not live in the context of a performance-critical loop, it runs once at initial connection time.
+            if (m_RelayServerData.Equals(default(RelayServerData)))
+            {
+                Debug.LogError("You must call SetRelayServerData() at least once before calling StartServer.");
+                return false;
+            }
+            else
+            {
+                m_NetworkSettings.WithRelayParameters(ref m_RelayServerData, m_HeartbeatTimeoutMS);
+                return ServerBindAndListen(NetworkEndpoint.AnyIpv4);
+            }
         }
 
         [BurstCompile]
@@ -647,36 +809,36 @@ namespace FishNet.Transporting.UTP
             switch (eventType)
             {
                 case TransportNetworkEvent.Type.Connect:
-                {
-                    SetClientConnectionState(LocalConnectionState.Started);
-                    return true;
-                }
+                    {
+                        SetClientConnectionState(LocalConnectionState.Started);
+                        return true;
+                    }
                 case TransportNetworkEvent.Type.Disconnect:
-                {
-                    // Handle cases where we're a client receiving a Disconnect event. The
-                    // meaning of the event depends on our current state. If we were connected
-                    // then it means we got disconnected. If we were disconnected means that our
-                    // connection attempt has failed.
-                    if (m_ServerState == LocalConnectionState.Started)
                     {
-                        HandleRemoteConnectionState(RemoteConnectionState.Stopped, clientId);
-                        m_ReliableReceiveQueues.Remove(clientId);
-                        ClearSendQueuesForClientId(clientId);
-                    }
-                    else
-                    {
-                        SetClientConnectionState(LocalConnectionState.Stopping);
-                        DisposeInternals();
-                        SetClientConnectionState(LocalConnectionState.Stopped);
-                    }
+                        // Handle cases where we're a client receiving a Disconnect event. The
+                        // meaning of the event depends on our current state. If we were connected
+                        // then it means we got disconnected. If we were disconnected means that our
+                        // connection attempt has failed.
+                        if (m_ServerState == LocalConnectionState.Started)
+                        {
+                            HandleRemoteConnectionState(RemoteConnectionState.Stopped, clientId);
+                            m_ReliableReceiveQueues.Remove(clientId);
+                            ClearSendQueuesForClientId(clientId);
+                        }
+                        else
+                        {
+                            SetClientConnectionState(LocalConnectionState.Stopping);
+                            DisposeInternals();
+                            SetClientConnectionState(LocalConnectionState.Stopped);
+                        }
 
-                    return true;
-                }
+                        return true;
+                    }
                 case TransportNetworkEvent.Type.Data:
-                {
-                    ReceiveMessages(clientId, pipeline, reader);
-                    return true;
-                }
+                    {
+                        ReceiveMessages(clientId, pipeline, reader);
+                        return true;
+                    }
             }
 
             return false;
@@ -791,6 +953,58 @@ namespace FishNet.Transporting.UTP
         }
 
         /// <summary>
+        /// Disconnects the local client from the remote
+        /// </summary>
+        private void DisconnectLocalClient()
+        {
+            if (m_ClientState == LocalConnectionState.Started || m_ClientState == LocalConnectionState.Starting)
+            {
+                SetClientConnectionState(LocalConnectionState.Stopping);
+                FlushSendQueuesForClientId(m_ServerClientId);
+
+                if (m_Driver.Disconnect(ParseClientId(m_ServerClientId)) == 0)
+                {
+                    m_ReliableReceiveQueues.Remove(m_ServerClientId);
+                    ClearSendQueuesForClientId(m_ServerClientId);
+
+                    // If we successfully disconnect we dispatch a local disconnect message
+                    // this how uNET and other transports worked and so this is just keeping with the old behavior
+                    // should be also noted on the client this will call shutdown on the NetworkManager and the Transport
+                    SetClientConnectionState(LocalConnectionState.Stopped);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Disconnects a remote client from the server
+        /// </summary>
+        /// <param name="clientId">The client to disconnect</param>
+        private bool DisconnectRemoteClient(ulong clientId)
+        {
+            Debug.Assert(m_ServerState == LocalConnectionState.Started, "DisconnectRemoteClient should be called on a listening server");
+
+            if (m_ServerState == LocalConnectionState.Started)
+            {
+                FlushSendQueuesForClientId(clientId);
+
+                m_ReliableReceiveQueues.Remove(clientId);
+                ClearSendQueuesForClientId(clientId);
+
+                // The server can disconnect the client at any time, even during ProcessEvent(), which can cause errors because the client still has Network Events.
+                // This workaround simply clears the Event queue for the client.
+                NetworkConnection connection = ParseClientId(clientId);
+                if (m_Driver.GetConnectionState(connection) != NetworkConnection.State.Disconnected)
+                {
+                    m_Driver.Disconnect(connection);
+                    while (m_Driver.PopEventForConnection(connection, out var _) != NetworkEvent.Type.Empty) { }
+                }
+                HandleRemoteConnectionState(RemoteConnectionState.Stopped, clientId);
+            }
+
+            return false;
+        }
+
+        /// <summary>
         /// Gets the current RTT for a specific client
         /// </summary>
         /// <param name="clientId">The client RTT to get</param>
@@ -898,6 +1112,88 @@ namespace FishNet.Transporting.UTP
         }
 
         /// <summary>
+        /// Connects client to the server
+        /// Note:
+        /// When this method returns false it could mean:
+        /// - You are trying to start a client that is already started
+        /// - It failed during the initial port binding when attempting to begin to connect
+        /// </summary>
+        /// <returns>true if the client was started and false if it failed to start the client</returns>
+        private bool StartClient()
+        {
+            if (m_ServerState == LocalConnectionState.Starting || m_ServerState == LocalConnectionState.Started)
+            {
+                return StartClientHost();
+            }
+
+            if (m_Driver.IsCreated)
+            {
+                return false;
+            }
+
+            SetClientConnectionState(LocalConnectionState.Starting);
+
+            InitializeNetworkSettings();
+
+            var succeeded = ClientBindAndConnect();
+            if (!succeeded)
+            {
+                SetClientConnectionState(LocalConnectionState.Stopping);
+                if (m_Driver.IsCreated)
+                {
+                    m_Driver.Dispose();
+                }
+                SetClientConnectionState(LocalConnectionState.Stopped);
+            }
+
+            return succeeded;
+        }
+
+        /// <summary>
+        /// Starts to listening for incoming clients
+        /// Note:
+        /// When this method returns false it could mean:
+        /// - You are trying to start a client that is already started
+        /// - It failed during the initial port binding when attempting to begin to connect
+        /// </summary>
+        /// <returns>true if the server was started and false if it failed to start the server</returns>
+        private bool StartServer()
+        {
+            if (m_Driver.IsCreated)
+            {
+                return false;
+            }
+
+            SetServerConnectionState(LocalConnectionState.Starting);
+
+            InitializeNetworkSettings();
+
+            bool succeeded = Protocol switch
+            {
+                ProtocolType.UnityTransport => ServerBindAndListen(ConnectionData.ListenEndPoint),
+                ProtocolType.RelayUnityTransport => StartRelayServer(),
+                _ => false
+            };
+
+            if (succeeded)
+            {
+                SetServerConnectionState(LocalConnectionState.Started);
+            }
+            else
+            {
+                SetServerConnectionState(LocalConnectionState.Stopping);
+                if (m_Driver.IsCreated)
+                {
+                    m_Driver.Dispose();
+                }
+                SetServerConnectionState(LocalConnectionState.Stopped);
+            }
+
+            return succeeded;
+        }
+
+
+        /// <summary>
         /// Shuts down the transport
         /// </summary>
         private void Disconnect()
@@ -924,6 +1220,250 @@ namespace FishNet.Transporting.UTP
             m_ServerClientId = 0;
         }
 
+#if UTP_TRANSPORT_2_0_ABOVE
+        private void ConfigureSimulatorForUtp2()
+        {
+            // As DebugSimulator is deprecated, the 'packetDelayMs', 'packetJitterMs' and 'packetDropPercentage'
+            // parameters are set to the default and are supposed to be changed using Network Simulator tool instead.
+            m_NetworkSettings.WithSimulatorStageParameters(
+                maxPacketCount: 300, // TODO Is there any way to compute a better value?
+                maxPacketSize: NetworkParameterConstants.MTU,
+                packetDelayMs: 0,
+                packetJitterMs: 0,
+                packetDropPercentage: 0,
+                randomSeed: (uint)System.Diagnostics.Stopwatch.GetTimestamp()
+                , mode: ApplyMode.AllPackets
+            );
+
+            m_NetworkSettings.WithNetworkSimulatorParameters();
+        }
+#else
+        private void ConfigureSimulatorForUtp1()
+        {
+            m_NetworkSettings.WithSimulatorStageParameters(
+                maxPacketCount: 300, // TODO Is there any way to compute a better value?
+                maxPacketSize: NetworkParameterConstants.MTU,
+                packetDelayMs: DebugSimulator.PacketDelayMS,
+                packetJitterMs: DebugSimulator.PacketJitterMS,
+                packetDropPercentage: DebugSimulator.PacketDropRate,
+                randomSeed: (uint)System.Diagnostics.Stopwatch.GetTimestamp()
+            );
+        }
+#endif
+
+#if UTP_TRANSPORT_2_0_ABOVE
+        private string m_ServerPrivateKey;
+        private string m_ServerCertificate;
+
+        private string m_ServerCommonName;
+        private string m_ClientCaCertificate;
+
+        /// <summary>Set the server parameters for encryption.</summary>
+        /// <remarks>
+        /// The public certificate and private key are expected to be in the PEM format, including
+        /// the begin/end markers like <c>-----BEGIN CERTIFICATE-----</c>.
+        /// </remarks>
+        /// <param name="serverCertificate">Public certificate for the server (PEM format).</param>
+        /// <param name="serverPrivateKey">Private key for the server (PEM format).</param>
+        public void SetServerSecrets(string serverCertificate, string serverPrivateKey)
+        {
+            m_ServerPrivateKey = serverPrivateKey;
+            m_ServerCertificate = serverCertificate;
+        }
+
+        /// <summary>Set the client parameters for encryption.</summary>
+        /// <remarks>
+        /// <para>
+        /// If the CA certificate is not provided, validation will be done against the OS/browser
+        /// certificate store. This is what you'd want if using certificates from a known provider.
+        /// For self-signed certificates, the CA certificate needs to be provided.
+        /// </para>
+        /// <para>
+        /// The CA certificate (if provided) is expected to be in the PEM format, including the
+        /// begin/end markers like <c>-----BEGIN CERTIFICATE-----</c>.
+        /// </para>
+        /// </remarks>
+        /// <param name="serverCommonName">Common name of the server (typically hostname).</param>
+        /// <param name="caCertificate">CA certificate used to validate the server's authenticity.</param>
+        public void SetClientSecrets(string serverCommonName, string caCertificate = null)
+        {
+            m_ServerCommonName = serverCommonName;
+            m_ClientCaCertificate = caCertificate;
+        }
+#endif
+
+        /// <summary>
+        /// Creates the internal NetworkDriver
+        /// </summary>
+        /// <param name="transport">The owner transport</param>
+        /// <param name="driver">The driver</param>
+        /// <param name="unreliableFragmentedPipeline">The UnreliableFragmented NetworkPipeline</param>
+        /// <param name="unreliableSequencedFragmentedPipeline">The UnreliableSequencedFragmented NetworkPipeline</param>
+        /// <param name="reliableSequencedPipeline">The ReliableSequenced NetworkPipeline</param>
+        public void CreateDriver(FishyUnityTransport transport, out NetworkDriver driver,
+            out NetworkPipeline unreliableFragmentedPipeline,
+            out NetworkPipeline unreliableSequencedFragmentedPipeline,
+            out NetworkPipeline reliableSequencedPipeline)
+        {
+#if !UTP_TRANSPORT_2_0_ABOVE && (UNITY_EDITOR || DEVELOPMENT_BUILD)
+            ConfigureSimulatorForUtp1();
+#endif
+
+            m_NetworkSettings.WithNetworkConfigParameters(
+                maxConnectAttempts: transport.m_MaxConnectAttempts,
+                connectTimeoutMS: transport.m_ConnectTimeoutMS,
+                disconnectTimeoutMS: transport.m_DisconnectTimeoutMS,
+#if UTP_TRANSPORT_2_0_ABOVE
+                sendQueueCapacity: m_MaxPacketQueueSize,
+                receiveQueueCapacity: m_MaxPacketQueueSize,
+#endif
+                heartbeatTimeoutMS: transport.m_HeartbeatTimeoutMS);
+
+#if UNITY_WEBGL && !UNITY_EDITOR
+            if (NetworkManager.IsServer && m_ProtocolType != ProtocolType.RelayUnityTransport)
+            {
+                throw new Exception("WebGL as a server is not supported by Unity Transport, outside the Editor.");
+            }
+#endif
+
+#if UTP_TRANSPORT_2_0_ABOVE
+            if (m_UseEncryption)
+            {
+                if (m_ProtocolType == ProtocolType.RelayUnityTransport)
+                {
+                    if (m_RelayServerData.IsSecure == 0)
+                    {
+                        // log an error because we have mismatched configuration
+                        NetworkManager.LogError("Mismatched security configuration, between Relay and local NetworkManager settings");
+                    }
+
+                    // No need to to anything else if using Relay because UTP will handle the
+                    // configuration of the security parameters on its own.
+                }
+                else
+                {
+                    if (NetworkManager.IsServer)
+                    {
+                        if (string.IsNullOrEmpty(m_ServerCertificate) || string.IsNullOrEmpty(m_ServerPrivateKey))
+                        {
+                            throw new Exception("In order to use encrypted communications, when hosting, you must set the server certificate and key.");
+                        }
+
+                        m_NetworkSettings.WithSecureServerParameters(m_ServerCertificate, m_ServerPrivateKey);
+                    }
+                    else
+                    {
+                        if (string.IsNullOrEmpty(m_ServerCommonName))
+                        {
+                            throw new Exception("In order to use encrypted communications, clients must set the server common name.");
+                        }
+                        else if (string.IsNullOrEmpty(m_ClientCaCertificate))
+                        {
+                            m_NetworkSettings.WithSecureClientParameters(m_ServerCommonName);
+                        }
+                        else
+                        {
+                            m_NetworkSettings.WithSecureClientParameters(m_ClientCaCertificate, m_ServerCommonName);
+                        }
+                    }
+                }
+            }
+#endif
+
+#if UTP_TRANSPORT_2_0_ABOVE
+            if (m_UseWebSockets)
+            {
+                driver = NetworkDriver.Create(new WebSocketNetworkInterface(), m_NetworkSettings);
+            }
+            else
+            {
+#if UNITY_WEBGL && !UNITY_EDITOR
+                Debug.LogWarning($"WebSockets were used even though they're not selected in NetworkManager. You should check {nameof(UseWebSockets)}', on the Unity Transport component, to silence this warning.");
+                driver = NetworkDriver.Create(new WebSocketNetworkInterface(), m_NetworkSettings);
+#else
+                driver = NetworkDriver.Create(new UDPNetworkInterface(), m_NetworkSettings);
+#endif
+            }
+#else
+            driver = NetworkDriver.Create(m_NetworkSettings);
+#endif
+
+#if !UTP_TRANSPORT_2_0_ABOVE
+            SetupPipelinesForUtp1(driver,
+                out unreliableFragmentedPipeline,
+                out unreliableSequencedFragmentedPipeline,
+                out reliableSequencedPipeline);
+#else
+            SetupPipelinesForUtp2(driver,
+                out unreliableFragmentedPipeline,
+                out unreliableSequencedFragmentedPipeline,
+                out reliableSequencedPipeline);
+#endif
+        }
+
+#if !UTP_TRANSPORT_2_0_ABOVE
+        private void SetupPipelinesForUtp1(NetworkDriver driver,
+            out NetworkPipeline unreliableFragmentedPipeline,
+            out NetworkPipeline unreliableSequencedFragmentedPipeline,
+            out NetworkPipeline reliableSequencedPipeline)
+        {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            if (DebugSimulator.PacketDelayMS > 0 || DebugSimulator.PacketDropRate > 0)
+            {
+                unreliableFragmentedPipeline = driver.CreatePipeline(
+                    typeof(FragmentationPipelineStage),
+                    typeof(SimulatorPipelineStage),
+                    typeof(SimulatorPipelineStageInSend)
+                );
+                unreliableSequencedFragmentedPipeline = driver.CreatePipeline(
+                    typeof(FragmentationPipelineStage),
+                    typeof(UnreliableSequencedPipelineStage),
+                    typeof(SimulatorPipelineStage),
+                    typeof(SimulatorPipelineStageInSend)
+                );
+                reliableSequencedPipeline = driver.CreatePipeline(
+                    typeof(ReliableSequencedPipelineStage),
+                    typeof(SimulatorPipelineStage),
+                    typeof(SimulatorPipelineStageInSend)
+                );
+            }
+            else
+#endif
+            {
+                unreliableFragmentedPipeline = driver.CreatePipeline(
+                    typeof(FragmentationPipelineStage)
+                );
+                unreliableSequencedFragmentedPipeline = driver.CreatePipeline(
+                    typeof(FragmentationPipelineStage),
+                    typeof(UnreliableSequencedPipelineStage)
+                );
+                reliableSequencedPipeline = driver.CreatePipeline(
+                    typeof(ReliableSequencedPipelineStage)
+                );
+            }
+        }
+#else
+        private void SetupPipelinesForUtp2(NetworkDriver driver,
+            out NetworkPipeline unreliableFragmentedPipeline,
+            out NetworkPipeline unreliableSequencedFragmentedPipeline,
+            out NetworkPipeline reliableSequencedPipeline)
+        {
+
+            unreliableFragmentedPipeline = driver.CreatePipeline(
+                typeof(FragmentationPipelineStage)
+            );
+
+            unreliableSequencedFragmentedPipeline = driver.CreatePipeline(
+                typeof(FragmentationPipelineStage),
+                typeof(UnreliableSequencedPipelineStage)
+            );
+
+            reliableSequencedPipeline = driver.CreatePipeline(
+                typeof(ReliableSequencedPipelineStage)
+            );
+        }
+#endif
+        
         // -------------- Utility Types -------------------------------------------------------------------------------
 
 
@@ -959,5 +1499,428 @@ namespace FishNet.Transporting.UTP
                 }
             }
         }
+
+        #region FishNet
+
+        [Range(1, 4095)]
+        [SerializeField] private int m_MaximumClients = 4095;
+
+        public override event Action<ClientConnectionStateArgs> OnClientConnectionState;
+        public override event Action<ServerConnectionStateArgs> OnServerConnectionState;
+        public override event Action<RemoteConnectionStateArgs> OnRemoteConnectionState;
+
+        private void OnDestroy()
+        {
+            Shutdown();
+        }
+
+        public override string GetConnectionAddress(int connectionId)
+        {
+            bool isServer = m_ServerState == LocalConnectionState.Started;
+            bool isClient = m_ClientState == LocalConnectionState.Started;
+            
+            if (isServer)
+            {
+                ulong transportId = ClientIdToTransportId(connectionId);
+                if (isClient && transportId == k_ClientHostId)
+                {
+                    return GetLocalEndPoint().Address;
+                }
+                NetworkConnection connection = ParseClientId(transportId);
+                return connection.GetState(m_Driver) == NetworkConnection.State.Disconnected
+                    ? string.Empty
+#if UTP_TRANSPORT_2_0_ABOVE
+                    : m_Driver.GetRemoteEndpoint(connection).Address;
+#else
+                    : m_Driver.RemoteEndPoint(connection).Address;
+#endif
+            }
+
+            if (isClient && NetworkManager.ClientManager.Connection.ClientId == connectionId)
+            {
+                return GetLocalEndPoint().Address;
+            }
+            return string.Empty;
+            
+            NetworkEndPoint GetLocalEndPoint()
+            {
+#if UTP_TRANSPORT_2_0_ABOVE
+            return m_Driver.GetLocalEndPoint();
+#else
+                return m_Driver.LocalEndPoint();
+#endif
+            }
+        }
+
+        public override LocalConnectionState GetConnectionState(bool server)
+        {
+            return server ? m_ServerState : m_ClientState;
+        }
+
+        public override RemoteConnectionState GetConnectionState(int connectionId)
+        {
+            ulong transportId = ClientIdToTransportId(connectionId);
+            return ParseClientId(transportId).GetState(m_Driver) == NetworkConnection.State.Connected
+                ? RemoteConnectionState.Started
+                : RemoteConnectionState.Stopped;
+        }
+
+        public override void HandleClientConnectionState(ClientConnectionStateArgs connectionStateArgs)
+        {
+            OnClientConnectionState?.Invoke(connectionStateArgs);
+        }
+
+        public override void HandleServerConnectionState(ServerConnectionStateArgs connectionStateArgs)
+        {
+            OnServerConnectionState?.Invoke(connectionStateArgs);
+        }
+
+        public override void HandleRemoteConnectionState(RemoteConnectionStateArgs connectionStateArgs)
+        {
+            OnRemoteConnectionState?.Invoke(connectionStateArgs);
+        }
+
+        public override void IterateIncoming(bool server)
+        {
+            if (m_ClientState == LocalConnectionState.Started && m_ServerState == LocalConnectionState.Started)
+            {
+                IterateClientHost(server);
+            }
+
+            IterateIncoming();
+        }
+
+        public override void IterateOutgoing(bool server)
+        {
+            if (server || m_ServerState != LocalConnectionState.Started)
+            {
+                IterateOutgoing();
+            }
+        }
+
+        public override event Action<ClientReceivedDataArgs> OnClientReceivedData;
+
+        public override void HandleClientReceivedDataArgs(ClientReceivedDataArgs receivedDataArgs)
+        {
+            OnClientReceivedData?.Invoke(receivedDataArgs);
+        }
+
+        public override event Action<ServerReceivedDataArgs> OnServerReceivedData;
+
+        public override void HandleServerReceivedDataArgs(ServerReceivedDataArgs receivedDataArgs)
+        {
+            OnServerReceivedData?.Invoke(receivedDataArgs);
+        }
+
+        public override void SendToServer(byte channelId, ArraySegment<byte> segment)
+        {
+            if (m_ServerState == LocalConnectionState.Started)
+            {
+                ClientHostSendToServer(channelId, segment);
+            }
+            else
+            {
+                Send(m_ServerClientId, segment, (Channel)channelId);
+            }
+        }
+
+        public override void SendToClient(byte channelId, ArraySegment<byte> segment, int connectionId)
+        {
+            ulong transportId = ClientIdToTransportId(connectionId);
+            if (m_ClientState == LocalConnectionState.Started && transportId == m_ServerClientId)
+            {
+                SendToClientHost(channelId, segment);
+            }
+            else
+            {
+                Send(transportId, segment, (Channel)channelId);
+            }
+        }
+
+        public override int GetMaximumClients() => m_MaximumClients;
+
+        public override void SetMaximumClients(int value)
+        {
+            if (m_ServerState == LocalConnectionState.Starting || m_ServerState == LocalConnectionState.Started)
+            {
+                if (NetworkManager.CanLog(LoggingType.Warning))
+                    Debug.LogWarning($"Cannot set maximum clients when server is running.");
+            }
+            else
+            {
+                m_MaximumClients = value;
+            }
+        }
+
+        public override void SetClientAddress(string address)
+        {
+            ConnectionData.Address = address;
+        }
+
+        public override string GetClientAddress()
+        {
+            return ConnectionData.Address;
+        }
+
+        public override void SetPort(ushort port)
+        {
+            ConnectionData.Port = port;
+        }
+
+        public override ushort GetPort()
+        {
+            return ConnectionData.Port;
+        }
+
+        public override void SetServerBindAddress(string address, IPAddressType addressType)
+        {
+            ConnectionData.ServerListenAddress = address;
+        }
+
+        public override string GetServerBindAddress(IPAddressType addressType)
+        {
+            return ConnectionData.ServerListenAddress;
+        }
+
+        public override bool StartConnection(bool server)
+        {
+            return server ? StartServer() : StartClient();
+        }
+
+        public override bool StopConnection(bool server)
+        {
+            return server ? StopServer() : StopClient();
+        }
+
+        public override bool StopConnection(int connectionId, bool immediately)
+        {
+            ulong transportId = ClientIdToTransportId(connectionId);
+            return transportId == m_ServerClientId ? StopClientHost() : DisconnectRemoteClient(transportId);
+        }
+
+        public override void Shutdown()
+        {
+            StopConnection(false);
+            StopConnection(true);
+        }
+
+        public override int GetMTU(byte channelId)
+        {
+            // Check for client activity
+            if (m_ClientState == LocalConnectionState.Started || m_ServerState == LocalConnectionState.Started)
+            {
+                NetworkPipeline pipeline = SelectSendPipeline((Channel)channelId);
+                return NetworkParameterConstants.MTU - m_Driver.MaxHeaderSize(pipeline);
+            }
+
+            return NetworkParameterConstants.MTU - 200;
+        }
+
+        private Channel SelectSendChannel(NetworkPipeline pipeline)
+        {
+            return pipeline == m_ReliableSequencedPipeline ? Channel.Reliable : Channel.Unreliable;
+        }
+
+        #endregion
+
+        #region Server
+
+        private LocalConnectionState m_ServerState;
+        private int m_NextClientId = 1;
+        private readonly Dictionary<int, ulong> m_TransportIdToClientIdMap = new Dictionary<int, ulong>();
+        private readonly Dictionary<ulong, int> m_ClientIdToTransportIdMap = new Dictionary<ulong, int>();
+
+        private int TransportIdToClientId(ulong connection) => m_ClientIdToTransportIdMap[connection];
+
+        private ulong ClientIdToTransportId(int transportId) => m_TransportIdToClientIdMap[transportId];
+
+        private void HandleRemoteConnectionState(RemoteConnectionState state, ulong clientId)
+        {
+            int transportId;
+            switch (state)
+            {
+                case RemoteConnectionState.Started:
+                    transportId = m_NextClientId++;
+                    m_TransportIdToClientIdMap[transportId] = clientId;
+                    m_ClientIdToTransportIdMap[clientId] = transportId;
+                    break;
+                case RemoteConnectionState.Stopped:
+                    transportId = m_ClientIdToTransportIdMap[clientId];
+                    m_TransportIdToClientIdMap.Remove(transportId);
+                    m_ClientIdToTransportIdMap.Remove(clientId);
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(state), state, null);
+            }
+
+            HandleRemoteConnectionState(new RemoteConnectionStateArgs(state, transportId, Index));
+        }
+
+        private void SetServerConnectionState(LocalConnectionState state)
+        {
+            m_ServerState = state;
+            HandleServerConnectionState(new ServerConnectionStateArgs(state, Index));
+        }
+
+        private bool StopServer()
+        {
+            if (m_ServerState == LocalConnectionState.Stopping || m_ServerState == LocalConnectionState.Stopped)
+            {
+                return false;
+            }
+
+            if (m_ClientState == LocalConnectionState.Starting || m_ClientState == LocalConnectionState.Started)
+            {
+                StopClientHost();
+            }
+
+            SetServerConnectionState(LocalConnectionState.Stopping);
+            Disconnect();
+            m_NextClientId = 1;
+            m_TransportIdToClientIdMap.Clear();
+            m_ClientIdToTransportIdMap.Clear();
+            SetServerConnectionState(LocalConnectionState.Stopped);
+
+            return true;
+        }
+
+        #endregion
+
+        #region Client
+
+        private LocalConnectionState m_ClientState;
+
+        private void SetClientConnectionState(LocalConnectionState state)
+        {
+            m_ClientState = state;
+            HandleClientConnectionState(new ClientConnectionStateArgs(state, Index));
+        }
+
+        private bool StopClient()
+        {
+            if (m_ClientState == LocalConnectionState.Stopping || m_ClientState == LocalConnectionState.Stopped)
+            {
+                return false;
+            }
+
+            if (m_ServerState == LocalConnectionState.Starting || m_ServerState == LocalConnectionState.Started)
+            {
+                return StopClientHost();
+            }
+
+            DisconnectLocalClient();
+            Disconnect();
+
+            return true;
+        }
+
+        private readonly struct ClientHostSendData
+        {
+            public byte[] Data { get; }
+            public int Length { get; }
+            public Channel Channel { get; }
+
+            public ClientHostSendData(Channel channel, ArraySegment<byte> data)
+            {
+                if (data.Array == null) throw new InvalidOperationException();
+
+                Data = new byte[data.Count];
+                Length = data.Count;
+                Buffer.BlockCopy(data.Array, data.Offset, Data, 0, Length);
+                Channel = channel;
+            }
+        }
+
+        private const ulong k_ClientHostId = 0;
+        private Queue<ClientHostSendData> m_ClientHostSendQueue;
+        private Queue<ClientHostSendData> m_ClientHostReceiveQueue;
+
+        private bool StartClientHost()
+        {
+            if (m_ClientState != LocalConnectionState.Stopped)
+            {
+                return false;
+            }
+
+            if (m_ServerState == LocalConnectionState.Started || m_ServerState == LocalConnectionState.Starting)
+            {
+                SetClientConnectionState(LocalConnectionState.Starting);
+                m_ServerClientId = k_ClientHostId;
+                SetClientConnectionState(LocalConnectionState.Started);
+                HandleRemoteConnectionState(RemoteConnectionState.Started, m_ServerClientId);
+                return true;
+            }
+            return false;
+        }
+
+        private bool StopClientHost()
+        {
+            if (m_ServerState == LocalConnectionState.Stopping || m_ServerState == LocalConnectionState.Stopped)
+            {
+                return false;
+            }
+
+            if (m_ClientState == LocalConnectionState.Stopping || m_ClientState == LocalConnectionState.Stopped)
+            {
+                return false;
+            }
+
+            SetClientConnectionState(LocalConnectionState.Stopping);
+            HandleRemoteConnectionState(RemoteConnectionState.Stopped, m_ServerClientId);
+            DisposeClientHost();
+            SetClientConnectionState(LocalConnectionState.Stopped);
+
+            return true;
+        }
+
+        private void DisposeClientHost()
+        {
+            m_ServerClientId = default;
+            m_ClientHostSendQueue?.Clear();
+            m_ClientHostReceiveQueue?.Clear();
+
+            m_ClientHostSendQueue = null;
+            m_ClientHostReceiveQueue = null;
+        }
+
+        private void IterateClientHost(bool asServer)
+        {
+            if (asServer)
+            {
+                while (m_ClientHostSendQueue != null && m_ClientHostSendQueue.Count > 0)
+                {
+                    ClientHostSendData packet = m_ClientHostSendQueue.Dequeue();
+                    var segment = new ArraySegment<byte>(packet.Data, 0, packet.Length);
+                    int connectionId = TransportIdToClientId(k_ClientHostId);
+                    HandleServerReceivedDataArgs(new ServerReceivedDataArgs(segment, packet.Channel, connectionId, Index));
+                }
+            }
+            else
+            {
+                while (m_ClientHostReceiveQueue != null && m_ClientHostReceiveQueue.Count > 0)
+                {
+                    ClientHostSendData packet = m_ClientHostReceiveQueue.Dequeue();
+                    var segment = new ArraySegment<byte>(packet.Data, 0, packet.Length);
+                    HandleClientReceivedDataArgs(new ClientReceivedDataArgs(segment, packet.Channel, Index));
+                    ByteArrayPool.Store(packet.Data);
+                }
+            }
+        }
+
+        private void SendToClientHost(int channelId, ArraySegment<byte> payload)
+        {
+            m_ClientHostReceiveQueue ??= new Queue<ClientHostSendData>();
+
+            m_ClientHostReceiveQueue.Enqueue(new ClientHostSendData((Channel)channelId, payload));
+        }
+
+        private void ClientHostSendToServer(int channelId, ArraySegment<byte> payload)
+        {
+            m_ClientHostSendQueue ??= new Queue<ClientHostSendData>();
+
+            m_ClientHostSendQueue.Enqueue(new ClientHostSendData((Channel)channelId, payload));
+        }
+
+        #endregion
     }
 }
