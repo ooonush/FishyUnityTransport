@@ -3,6 +3,7 @@ using FishNet.Utility.Performance;
 using Networking = Unity.Networking;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 using TransportNetworkEvent = Unity.Networking.Transport.NetworkEvent;
 using Unity.Burst;
@@ -1765,6 +1766,13 @@ namespace FishNet.Transporting.UTP
             if (m_ClientState == LocalConnectionState.Starting || m_ClientState == LocalConnectionState.Started)
             {
                 StopClientHost();
+            }
+
+            ulong[] connectedClients = m_ClientIdToTransportIdMap.Keys.ToArray();
+
+            foreach (ulong clientId in connectedClients)
+            {
+                DisconnectRemoteClient(clientId);
             }
 
             SetServerConnectionState(LocalConnectionState.Stopping);
