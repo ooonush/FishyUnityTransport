@@ -1546,7 +1546,7 @@ namespace FishNet.Transporting.UTP
             NetworkEndPoint GetLocalEndPoint()
             {
 #if UTP_TRANSPORT_2_0_ABOVE
-            return m_Driver.GetLocalEndPoint();
+            return m_Driver.GetLocalEndpoint();
 #else
                 return m_Driver.LocalEndPoint();
 #endif
