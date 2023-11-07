@@ -1309,7 +1309,7 @@ namespace FishNet.Transporting.UTP
 #if !UTP_TRANSPORT_2_0_ABOVE && (UNITY_EDITOR || DEVELOPMENT_BUILD)
             ConfigureSimulatorForUtp1();
 #endif
-
+            bool asServer = m_ServerState == LocalConnectionState.Starting;
             m_NetworkSettings.WithNetworkConfigParameters(
                 maxConnectAttempts: transport.m_MaxConnectAttempts,
                 connectTimeoutMS: transport.m_ConnectTimeoutMS,
@@ -1321,7 +1321,7 @@ namespace FishNet.Transporting.UTP
                 heartbeatTimeoutMS: transport.m_HeartbeatTimeoutMS);
 
 #if UNITY_WEBGL && !UNITY_EDITOR
-            if (NetworkManager.IsServer && m_ProtocolType != ProtocolType.RelayUnityTransport)
+            if (asServer && m_ProtocolType != ProtocolType.RelayUnityTransport)
             {
                 throw new Exception("WebGL as a server is not supported by Unity Transport, outside the Editor.");
             }
@@ -1343,7 +1343,7 @@ namespace FishNet.Transporting.UTP
                 }
                 else
                 {
-                    if (NetworkManager.IsServer)
+                    if (asServer)
                     {
                         if (string.IsNullOrEmpty(m_ServerCertificate) || string.IsNullOrEmpty(m_ServerPrivateKey))
                         {
