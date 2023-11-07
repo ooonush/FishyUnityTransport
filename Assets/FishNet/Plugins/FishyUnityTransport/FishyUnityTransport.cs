@@ -1737,17 +1737,17 @@ namespace FishNet.Transporting.UTP
                     transportId = m_NextClientId++;
                     m_TransportIdToClientIdMap[transportId] = clientId;
                     m_ClientIdToTransportIdMap[clientId] = transportId;
+                    HandleRemoteConnectionState(new RemoteConnectionStateArgs(state, transportId, Index));
                     break;
                 case RemoteConnectionState.Stopped:
                     transportId = m_ClientIdToTransportIdMap[clientId];
+                    HandleRemoteConnectionState(new RemoteConnectionStateArgs(state, transportId, Index));
                     m_TransportIdToClientIdMap.Remove(transportId);
                     m_ClientIdToTransportIdMap.Remove(clientId);
                     break;
                 default:
                     throw new ArgumentOutOfRangeException(nameof(state), state, null);
             }
-
-            HandleRemoteConnectionState(new RemoteConnectionStateArgs(state, transportId, Index));
         }
 
         private void SetServerConnectionState(LocalConnectionState state)
