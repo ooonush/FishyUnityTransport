@@ -1,4 +1,3 @@
-using FishNet.Managing.Logging;
 using FishNet.Utility.Performance;
 using Networking = Unity.Networking;
 using System;
@@ -867,8 +866,8 @@ namespace FishNet.Transporting.UTP
 
                 if (m_ProtocolType == ProtocolType.RelayUnityTransport && m_Driver.GetRelayConnectionStatus() == RelayConnectionStatus.AllocationInvalid)
                 {
-                    Debug.LogError("Transport failure! Relay allocation needs to be recreated, and NetworkManager restarted. " +
-                                   "Use NetworkManager.OnTransportFailure to be notified of such events programmatically.");
+                    Debug.LogError("Transport failure! Relay allocation needs to be recreated, and NetworkManager restarted. ");
+                    // + "Use NetworkManager.OnTransportFailure to be notified of such events programmatically.");
 
                     // TODO
                     // InvokeOnTransportEvent(TransportFailure);
@@ -968,9 +967,6 @@ namespace FishNet.Transporting.UTP
                     m_ReliableReceiveQueues.Remove(m_ServerClientId);
                     ClearSendQueuesForClientId(m_ServerClientId);
 
-                    // If we successfully disconnect we dispatch a local disconnect message
-                    // this how uNET and other transports worked and so this is just keeping with the old behavior
-                    // should be also noted on the client this will call shutdown on the NetworkManager and the Transport
                     SetClientConnectionState(LocalConnectionState.Stopped);
                 }
             }
@@ -1335,7 +1331,7 @@ namespace FishNet.Transporting.UTP
                     if (m_RelayServerData.IsSecure == 0)
                     {
                         // log an error because we have mismatched configuration
-                        NetworkManager.LogError("Mismatched security configuration, between Relay and local NetworkManager settings");
+                        NetworkManager.LogError("Mismatched security configuration, between Relay and local UnityTransport settings");
                     }
 
                     // No need to to anything else if using Relay because UTP will handle the
@@ -1644,8 +1640,7 @@ namespace FishNet.Transporting.UTP
         {
             if (m_ServerState == LocalConnectionState.Starting || m_ServerState == LocalConnectionState.Started)
             {
-                if (NetworkManager.CanLog(LoggingType.Warning))
-                    Debug.LogWarning($"Cannot set maximum clients when server is running.");
+                NetworkManager.LogWarning("Cannot set maximum clients when server is running.");
             }
             else
             {
