@@ -1,0 +1,21 @@
+{
+    "name": "FishyUTPDemo",
+    "rootNamespace": "FishNet.Example.Transport.UnityTransport.Relay",
+    "references": [
+        "GUID:7c88a4a7926ee5145ad2dfa06f454c67",
+        "GUID:c240c7a8153142ad92a23143a68f0c23",
+        "GUID:f2d49d9fa7e7eb3418e39723a7d3b92f",
+        "GUID:03058786646e84a4587858e9302c3f41",
+        "GUID:5540e30183c82e84b954c033c388e06c",
+        "GUID:fe25561d224ed4743af4c60938a59d0b"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
