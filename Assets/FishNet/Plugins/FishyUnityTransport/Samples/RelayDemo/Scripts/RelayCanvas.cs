@@ -12,6 +12,7 @@ using UnityEngine.UI;
 
 namespace FishNet.Example.Transport.UnityTransport.Relay
 {
+    // Its important to add Unity Services to the project and enable Relay in the UGS Dashboard (https://cloud.unity.com/)
     public class RelayCanvas : MonoBehaviour
     {
         #region Serialized
