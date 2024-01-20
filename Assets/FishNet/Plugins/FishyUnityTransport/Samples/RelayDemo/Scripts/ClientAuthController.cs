@@ -8,6 +8,8 @@ using UnityEngine;
 
 namespace FishNet.Example.Transport.UnityTransport.Relay
 {
+    
+    // Very basic client auth controller for demo purposes.
     public class ClientAuthController : NetworkBehaviour
     {
 

@@ -34,11 +34,13 @@ namespace FishNet.Example.Transport.UnityTransport.Relay
             StartHostButton.onClick.AddListener(() =>
             {
                 StartHostButton.interactable = false;
+                StartClientOnlyButton.interactable = false;
                 _ = StartHostAsync();
             });
             // Setup ClientButton Listener, deactivates button after click to prevent multiple clicks
             StartClientOnlyButton.onClick.AddListener(() =>
             {
+                StartHostButton.interactable = false;
                 StartClientOnlyButton.interactable = false;
                 _ = StartClient(JoinCodeInputText.text);
             });
@@ -47,19 +49,19 @@ namespace FishNet.Example.Transport.UnityTransport.Relay
         private async Task StartHostAsync()
         {
             // Initialize Unity Services
-            // It's Important to Initialize Unity Services and Authentication before using Relay
+            // It's Important to Initialize Unity Services and Authenticate before using Relay
             await UnityServices.InitializeAsync();
             if (!AuthenticationService.Instance.IsSignedIn)
             {
                 // For the example, we will sign in anonymously
                 await AuthenticationService.Instance.SignInAnonymouslyAsync();
             }
-
-            Debug.Log("Start Host Aysnc called");
+            // get FishyUnityTransport
             var utp = (FishyUnityTransport)_networkManager.TransportManager.Transport;
 
             // Setup HostAllocation
             Allocation hostAllocation = await RelayService.Instance.CreateAllocationAsync(4);
+            // Get JoinCode from allocation
             var joinCode = await RelayService.Instance.GetJoinCodeAsync(hostAllocation.AllocationId);
             Debug.Log("Join Code: " + joinCode);
             utp.SetRelayServerData(new RelayServerData(hostAllocation, "dtls"));
@@ -76,15 +78,16 @@ namespace FishNet.Example.Transport.UnityTransport.Relay
         private async Task StartClient(string joinCode)
         {
             // Initialize Unity Services
-            // It's Important to Initialize Unity Services and Authentication before using Relay
+            // It's Important to Initialize Unity Services and Authenticate before using Relay
             await UnityServices.InitializeAsync();
             if (!AuthenticationService.Instance.IsSignedIn)
             {
-                //If not already logged, log the user in
+                // For the example, we will sign in anonymously
                 await AuthenticationService.Instance.SignInAnonymouslyAsync();
             }
 
             var utp = (FishyUnityTransport)_networkManager.TransportManager.Transport;
+            // get JoinAllocation from JoinCode
             JoinAllocation joinAllocation = await RelayService.Instance.JoinAllocationAsync(joinCode);
             utp.SetRelayServerData(new RelayServerData(joinAllocation, "dtls"));
 
