@@ -142,9 +142,11 @@ namespace FishNet.Transporting.UTP
         [SerializeField]
         private ProtocolType m_ProtocolType;
 
-#if UTP_TRANSPORT_2_0_ABOVE
         [Tooltip("Per default the client/server will communicate over UDP. Set to true to communicate with WebSocket.")]
         [SerializeField]
+#if !UTP_TRANSPORT_2_0_ABOVE
+        [HideInInspector]
+#endif
         private bool m_UseWebSockets = false;
 
         public bool UseWebSockets
@@ -158,13 +160,15 @@ namespace FishNet.Transporting.UTP
         /// </summary>
         [Tooltip("Per default the client/server communication will not be encrypted. Select true to enable DTLS for UDP and TLS for Websocket.")]
         [SerializeField]
+#if !UTP_TRANSPORT_2_0_ABOVE
+        [HideInInspector]
+#endif
         private bool m_UseEncryption = false;
         public bool UseEncryption
         {
             get => m_UseEncryption;
             set => m_UseEncryption = value;
         }
-#endif
 
         [Tooltip("The maximum amount of packets that can be in the internal send/receive queues. Basically this is how many packets can be sent/received in a single update/frame.")]
         [SerializeField]
@@ -1023,7 +1027,13 @@ namespace FishNet.Transporting.UTP
             var fragmentationCapacity = m_MaxPayloadSize + BatchedSendQueue.PerMessageOverhead;
             m_NetworkSettings.WithFragmentationStageParameters(payloadCapacity: fragmentationCapacity);
 
-            m_NetworkSettings.WithReliableStageParameters(windowSize: 64);
+            m_NetworkSettings.WithReliableStageParameters(
+                windowSize: 64
+#if UTP_TRANSPORT_2_0_ABOVE
+                ,
+                maximumResendTime: m_ProtocolType == ProtocolType.RelayUnityTransport ? 750 : 500
+#endif
+            );
 
 #if !UTP_TRANSPORT_2_0_ABOVE && !UNITY_WEBGL
             m_NetworkSettings.WithBaselibNetworkInterfaceParameters(
@@ -1364,6 +1374,21 @@ namespace FishNet.Transporting.UTP
                             m_NetworkSettings.WithSecureClientParameters(m_ClientCaCertificate, m_ServerCommonName);
                         }
                     }
+                }
+            }
+#endif
+
+#if UTP_TRANSPORT_2_1_ABOVE
+            if (m_ProtocolType == ProtocolType.RelayUnityTransport)
+            {
+                if (m_UseWebSockets && m_RelayServerData.IsWebSocket == 0)
+                {
+                    Debug.LogError("Transport is configured to use WebSockets, but Relay server data isn't. Be sure to use \"wss\" as the connection type when creating the server data (instead of \"dtls\" or \"udp\").");
+                }
+
+                if (!m_UseWebSockets && m_RelayServerData.IsWebSocket != 0)
+                {
+                    Debug.LogError("Relay server data indicates usage of WebSockets, but \"Use WebSockets\" checkbox isn't checked under \"Unity Transport\" component.");
                 }
             }
 #endif
