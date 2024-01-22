@@ -872,6 +872,7 @@ namespace FishNet.Transporting.UTP
                 if (m_ProtocolType == ProtocolType.RelayUnityTransport && m_Driver.GetRelayConnectionStatus() == RelayConnectionStatus.AllocationInvalid)
                 {
                     Debug.LogError("Transport failure! Relay allocation needs to be recreated, and NetworkManager restarted. ");
+                    Shutdown();
                     // + "Use NetworkManager.OnTransportFailure to be notified of such events programmatically.");
 
                     // TODO
