@@ -976,6 +976,7 @@ namespace FishNet.Transporting.UTP
                     SetClientConnectionState(LocalConnectionState.Stopped);
                 }
             }
+            Disconnect();
         }
 
         /// <summary>
@@ -1832,7 +1833,6 @@ namespace FishNet.Transporting.UTP
             }
 
             DisconnectLocalClient();
-            Disconnect();
 
             return true;
         }
