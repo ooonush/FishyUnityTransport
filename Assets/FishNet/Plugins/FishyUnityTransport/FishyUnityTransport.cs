@@ -752,15 +752,7 @@ namespace FishNet.Transporting.UTP
                 return false;
             }
 
-            if (NetworkManager.ServerManager.Clients.Count >= GetMaximumClients())
-            {
-                DisconnectRemoteClient(ParseClientId(connection));
-            }
-            else
-            {
-                HandleRemoteConnectionState(RemoteConnectionState.Started, ParseClientId(connection));
-            }
-
+            HandleRemoteConnectionState(RemoteConnectionState.Started, ParseClientId(connection));
             return true;
         }
 
@@ -873,10 +865,6 @@ namespace FishNet.Transporting.UTP
                 {
                     Debug.LogError("Transport failure! Relay allocation needs to be recreated, and NetworkManager restarted. ");
                     Shutdown();
-                    // + "Use NetworkManager.OnTransportFailure to be notified of such events programmatically.");
-
-                    // TODO
-                    // InvokeOnTransportEvent(TransportFailure);
                     return;
                 }
 
@@ -1101,8 +1089,6 @@ namespace FishNet.Transporting.UTP
                     else
                     {
                         DisconnectRemoteClient(clientId);
-
-                        HandleRemoteConnectionState(RemoteConnectionState.Stopped, clientId);
                     }
                 }
                 else
@@ -1639,6 +1625,8 @@ namespace FishNet.Transporting.UTP
 
         public override void SendToServer(byte channelId, ArraySegment<byte> segment)
         {
+            if (m_ClientState != LocalConnectionState.Started) return;
+            
             if (m_ServerState == LocalConnectionState.Started)
             {
                 ClientHostSendToServer(channelId, segment);
@@ -1651,6 +1639,8 @@ namespace FishNet.Transporting.UTP
 
         public override void SendToClient(byte channelId, ArraySegment<byte> segment, int connectionId)
         {
+            if (m_ServerState != LocalConnectionState.Started) return;
+            
             ulong transportId = ClientIdToTransportId(connectionId);
             if (m_ClientState == LocalConnectionState.Started && transportId == m_ServerClientId)
             {
@@ -1757,10 +1747,25 @@ namespace FishNet.Transporting.UTP
             switch (state)
             {
                 case RemoteConnectionState.Started:
-                    transportId = m_NextClientId++;
-                    m_TransportIdToClientIdMap[transportId] = clientId;
-                    m_ClientIdToTransportIdMap[clientId] = transportId;
-                    HandleRemoteConnectionState(new RemoteConnectionStateArgs(state, transportId, Index));
+                    if (m_TransportIdToClientIdMap.Count >= GetMaximumClients())
+                    {
+                        Debug.LogWarning("Connection limit reached. Server cannot accept new connections.");
+                        // The server can disconnect the client at any time, even during ProcessEvent(), which can cause errors because the client still has Network Events.
+                        // This workaround simply clears the Event queue for the client.
+                        NetworkConnection connection = ParseClientId(clientId);
+                        if (m_Driver.GetConnectionState(connection) != NetworkConnection.State.Disconnected)
+                        {
+                            m_Driver.Disconnect(connection);
+                            while (m_Driver.PopEventForConnection(connection, out var _) != NetworkEvent.Type.Empty) { }
+                        }
+                    }
+                    else
+                    {
+                        transportId = m_NextClientId++;
+                        m_TransportIdToClientIdMap[transportId] = clientId;
+                        m_ClientIdToTransportIdMap[clientId] = transportId;
+                        HandleRemoteConnectionState(new RemoteConnectionStateArgs(state, transportId, Index));
+                    }
                     break;
                 case RemoteConnectionState.Stopped:
                     transportId = m_ClientIdToTransportIdMap[clientId];
@@ -1868,9 +1873,16 @@ namespace FishNet.Transporting.UTP
             if (m_ServerState == LocalConnectionState.Started || m_ServerState == LocalConnectionState.Starting)
             {
                 SetClientConnectionState(LocalConnectionState.Starting);
+                if (m_TransportIdToClientIdMap.Count >= GetMaximumClients())
+                {
+                    SetClientConnectionState(LocalConnectionState.Stopping);
+                    Debug.LogWarning("Connection limit reached. Server cannot accept new connections.");
+                    SetClientConnectionState(LocalConnectionState.Stopped);
+                    return false;
+                }
                 m_ServerClientId = k_ClientHostId;
-                SetClientConnectionState(LocalConnectionState.Started);
                 HandleRemoteConnectionState(RemoteConnectionState.Started, m_ServerClientId);
+                SetClientConnectionState(LocalConnectionState.Started);
                 return true;
             }
             return false;
