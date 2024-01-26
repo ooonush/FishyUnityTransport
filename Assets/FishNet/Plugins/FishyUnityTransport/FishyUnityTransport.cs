@@ -142,9 +142,11 @@ namespace FishNet.Transporting.UTP
         [SerializeField]
         private ProtocolType m_ProtocolType;
 
-#if UTP_TRANSPORT_2_0_ABOVE
         [Tooltip("Per default the client/server will communicate over UDP. Set to true to communicate with WebSocket.")]
         [SerializeField]
+#if !UTP_TRANSPORT_2_0_ABOVE
+        [HideInInspector]
+#endif
         private bool m_UseWebSockets = false;
 
         public bool UseWebSockets
@@ -158,13 +160,15 @@ namespace FishNet.Transporting.UTP
         /// </summary>
         [Tooltip("Per default the client/server communication will not be encrypted. Select true to enable DTLS for UDP and TLS for Websocket.")]
         [SerializeField]
+#if !UTP_TRANSPORT_2_0_ABOVE
+        [HideInInspector]
+#endif
         private bool m_UseEncryption = false;
         public bool UseEncryption
         {
             get => m_UseEncryption;
             set => m_UseEncryption = value;
         }
-#endif
 
         [Tooltip("The maximum amount of packets that can be in the internal send/receive queues. Basically this is how many packets can be sent/received in a single update/frame.")]
         [SerializeField]
@@ -748,15 +752,7 @@ namespace FishNet.Transporting.UTP
                 return false;
             }
 
-            if (NetworkManager.ServerManager.Clients.Count >= GetMaximumClients())
-            {
-                DisconnectRemoteClient(ParseClientId(connection));
-            }
-            else
-            {
-                HandleRemoteConnectionState(RemoteConnectionState.Started, ParseClientId(connection));
-            }
-
+            HandleRemoteConnectionState(RemoteConnectionState.Started, ParseClientId(connection));
             return true;
         }
 
@@ -868,10 +864,7 @@ namespace FishNet.Transporting.UTP
                 if (m_ProtocolType == ProtocolType.RelayUnityTransport && m_Driver.GetRelayConnectionStatus() == RelayConnectionStatus.AllocationInvalid)
                 {
                     Debug.LogError("Transport failure! Relay allocation needs to be recreated, and NetworkManager restarted. ");
-                    // + "Use NetworkManager.OnTransportFailure to be notified of such events programmatically.");
-
-                    // TODO
-                    // InvokeOnTransportEvent(TransportFailure);
+                    Shutdown();
                     return;
                 }
 
@@ -971,6 +964,7 @@ namespace FishNet.Transporting.UTP
                     SetClientConnectionState(LocalConnectionState.Stopped);
                 }
             }
+            Disconnect();
         }
 
         /// <summary>
@@ -1023,7 +1017,13 @@ namespace FishNet.Transporting.UTP
             var fragmentationCapacity = m_MaxPayloadSize + BatchedSendQueue.PerMessageOverhead;
             m_NetworkSettings.WithFragmentationStageParameters(payloadCapacity: fragmentationCapacity);
 
-            m_NetworkSettings.WithReliableStageParameters(windowSize: 64);
+            m_NetworkSettings.WithReliableStageParameters(
+                windowSize: 64
+#if UTP_TRANSPORT_2_0_ABOVE
+                ,
+                maximumResendTime: m_ProtocolType == ProtocolType.RelayUnityTransport ? 750 : 500
+#endif
+            );
 
 #if !UTP_TRANSPORT_2_0_ABOVE && !UNITY_WEBGL
             m_NetworkSettings.WithBaselibNetworkInterfaceParameters(
@@ -1089,8 +1089,6 @@ namespace FishNet.Transporting.UTP
                     else
                     {
                         DisconnectRemoteClient(clientId);
-
-                        HandleRemoteConnectionState(RemoteConnectionState.Stopped, clientId);
                     }
                 }
                 else
@@ -1368,6 +1366,21 @@ namespace FishNet.Transporting.UTP
             }
 #endif
 
+#if UTP_TRANSPORT_2_1_ABOVE
+            if (m_ProtocolType == ProtocolType.RelayUnityTransport)
+            {
+                if (m_UseWebSockets && m_RelayServerData.IsWebSocket == 0)
+                {
+                    Debug.LogError("Transport is configured to use WebSockets, but Relay server data isn't. Be sure to use \"wss\" as the connection type when creating the server data (instead of \"dtls\" or \"udp\").");
+                }
+
+                if (!m_UseWebSockets && m_RelayServerData.IsWebSocket != 0)
+                {
+                    Debug.LogError("Relay server data indicates usage of WebSockets, but \"Use WebSockets\" checkbox isn't checked under \"Unity Transport\" component.");
+                }
+            }
+#endif
+
 #if UTP_TRANSPORT_2_0_ABOVE
             if (m_UseWebSockets)
             {
@@ -1612,6 +1625,8 @@ namespace FishNet.Transporting.UTP
 
         public override void SendToServer(byte channelId, ArraySegment<byte> segment)
         {
+            if (m_ClientState != LocalConnectionState.Started) return;
+            
             if (m_ServerState == LocalConnectionState.Started)
             {
                 ClientHostSendToServer(channelId, segment);
@@ -1624,6 +1639,8 @@ namespace FishNet.Transporting.UTP
 
         public override void SendToClient(byte channelId, ArraySegment<byte> segment, int connectionId)
         {
+            if (m_ServerState != LocalConnectionState.Started) return;
+            
             ulong transportId = ClientIdToTransportId(connectionId);
             if (m_ClientState == LocalConnectionState.Started && transportId == m_ServerClientId)
             {
@@ -1730,10 +1747,25 @@ namespace FishNet.Transporting.UTP
             switch (state)
             {
                 case RemoteConnectionState.Started:
-                    transportId = m_NextClientId++;
-                    m_TransportIdToClientIdMap[transportId] = clientId;
-                    m_ClientIdToTransportIdMap[clientId] = transportId;
-                    HandleRemoteConnectionState(new RemoteConnectionStateArgs(state, transportId, Index));
+                    if (m_TransportIdToClientIdMap.Count >= GetMaximumClients())
+                    {
+                        Debug.LogWarning("Connection limit reached. Server cannot accept new connections.");
+                        // The server can disconnect the client at any time, even during ProcessEvent(), which can cause errors because the client still has Network Events.
+                        // This workaround simply clears the Event queue for the client.
+                        NetworkConnection connection = ParseClientId(clientId);
+                        if (m_Driver.GetConnectionState(connection) != NetworkConnection.State.Disconnected)
+                        {
+                            m_Driver.Disconnect(connection);
+                            while (m_Driver.PopEventForConnection(connection, out var _) != NetworkEvent.Type.Empty) { }
+                        }
+                    }
+                    else
+                    {
+                        transportId = m_NextClientId++;
+                        m_TransportIdToClientIdMap[transportId] = clientId;
+                        m_ClientIdToTransportIdMap[clientId] = transportId;
+                        HandleRemoteConnectionState(new RemoteConnectionStateArgs(state, transportId, Index));
+                    }
                     break;
                 case RemoteConnectionState.Stopped:
                     transportId = m_ClientIdToTransportIdMap[clientId];
@@ -1806,7 +1838,6 @@ namespace FishNet.Transporting.UTP
             }
 
             DisconnectLocalClient();
-            Disconnect();
 
             return true;
         }
@@ -1842,9 +1873,16 @@ namespace FishNet.Transporting.UTP
             if (m_ServerState == LocalConnectionState.Started || m_ServerState == LocalConnectionState.Starting)
             {
                 SetClientConnectionState(LocalConnectionState.Starting);
+                if (m_TransportIdToClientIdMap.Count >= GetMaximumClients())
+                {
+                    SetClientConnectionState(LocalConnectionState.Stopping);
+                    Debug.LogWarning("Connection limit reached. Server cannot accept new connections.");
+                    SetClientConnectionState(LocalConnectionState.Stopped);
+                    return false;
+                }
                 m_ServerClientId = k_ClientHostId;
-                SetClientConnectionState(LocalConnectionState.Started);
                 HandleRemoteConnectionState(RemoteConnectionState.Started, m_ServerClientId);
+                SetClientConnectionState(LocalConnectionState.Started);
                 return true;
             }
             return false;
