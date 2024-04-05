@@ -1,4 +1,3 @@
-using FishNet.Utility.Performance;
 using FishNet.Managing;
 using Networking = Unity.Networking;
 using System;
@@ -342,7 +341,7 @@ namespace FishNet.Transporting.UTP
 
 
         /// <summary>
-        /// The connection (address) data for this <see cref="UnityTransport"/> instance.
+        /// The connection (address) data for this <see cref="FishyUnityTransport"/> instance.
         /// This is where you can change IP Address, Port, or server's listen address.
         /// <see cref="ConnectionAddressData"/>
         /// </summary>
@@ -554,7 +553,7 @@ namespace FishNet.Transporting.UTP
         /// <param name="serverData">Data for the Relay server to use.</param>
         public void SetRelayServerData(RelayServerData serverData)
         {
-            if (m_ServerState == LocalConnectionState.Starting || m_ServerState == LocalConnectionState.Started)
+            if (m_ServerState.IsStartingOrStarted())
             {
                 NetworkManager.LogWarning("It looks like you are trying to connect as a host to the " +
                                           "Relay server. Since the local server is already running, " +
@@ -951,7 +950,7 @@ namespace FishNet.Transporting.UTP
         /// </summary>
         private void DisconnectLocalClient()
         {
-            if (m_ClientState == LocalConnectionState.Started || m_ClientState == LocalConnectionState.Starting)
+            if (m_ClientState.IsStartingOrStarted())
             {
                 SetClientConnectionState(LocalConnectionState.Stopping);
                 FlushSendQueuesForClientId(m_ServerClientId);
@@ -1003,9 +1002,12 @@ namespace FishNet.Transporting.UTP
         /// <returns>The RTT</returns>
         public ulong GetCurrentRtt(int clientId)
         {
-            ulong transportId = ClientIdToTransportId(clientId);
-
-            return (ulong)ExtractRtt(ParseClientId(transportId));
+            if (m_TransportIdToClientIdMap.TryGetValue(clientId, out ulong transportId))
+            {
+                return (ulong)ExtractRtt(ParseClientId(transportId));
+            }
+            NetworkManager.LogWarning($"Connection with id {clientId} is disconnected. Unable to get the current Rtt.");
+            return 0;
         }
 
         private void InitializeNetworkSettings()
@@ -1117,17 +1119,31 @@ namespace FishNet.Transporting.UTP
         /// <returns>true if the client was started and false if it failed to start the client</returns>
         private bool StartClient()
         {
-            if (m_ServerState == LocalConnectionState.Starting || m_ServerState == LocalConnectionState.Started)
-            {
-                return StartClientHost();
-            }
-
-            if (m_Driver.IsCreated)
+            if (m_ClientState != LocalConnectionState.Stopped)
             {
                 return false;
             }
 
             SetClientConnectionState(LocalConnectionState.Starting);
+
+            if (m_ServerState == LocalConnectionState.Starting)
+            {
+                return true;
+            }
+            if (m_ServerState == LocalConnectionState.Started)
+            {
+                if (m_TransportIdToClientIdMap.Count >= GetMaximumClients())
+                {
+                    SetClientConnectionState(LocalConnectionState.Stopping);
+                    NetworkManager.LogWarning("Connection limit reached. Server cannot accept new connections.");
+                    SetClientConnectionState(LocalConnectionState.Stopped);
+                    return false;
+                }
+                m_ServerClientId = k_ClientHostId;
+                HandleRemoteConnectionState(RemoteConnectionState.Started, m_ServerClientId);
+                SetClientConnectionState(LocalConnectionState.Started);
+                return true;
+            }
 
             InitializeNetworkSettings();
 
@@ -1174,10 +1190,21 @@ namespace FishNet.Transporting.UTP
             if (succeeded)
             {
                 SetServerConnectionState(LocalConnectionState.Started);
+                if (m_ClientState == LocalConnectionState.Starting)
+                {
+                    // Success client host starting
+                    HandleRemoteConnectionState(RemoteConnectionState.Started, m_ServerClientId);
+                    SetClientConnectionState(LocalConnectionState.Started);
+                }
             }
             else
             {
                 SetServerConnectionState(LocalConnectionState.Stopping);
+                if (m_ClientState == LocalConnectionState.Starting)
+                {
+                    // Fail client host starting
+                    StopClientHost();
+                }
                 if (m_Driver.IsCreated)
                 {
                     m_Driver.Dispose();
@@ -1532,7 +1559,11 @@ namespace FishNet.Transporting.UTP
             
             if (isServer)
             {
-                ulong transportId = ClientIdToTransportId(connectionId);
+                if (!m_TransportIdToClientIdMap.TryGetValue(connectionId, out ulong transportId))
+                {
+                    NetworkManager.LogWarning($"Connection with id {connectionId} is disconnected. Unable to get connection address.");
+                    return string.Empty;
+                }
                 if (isClient && transportId == k_ClientHostId)
                 {
                     return GetLocalEndPoint().Address;
@@ -1570,10 +1601,13 @@ namespace FishNet.Transporting.UTP
 
         public override RemoteConnectionState GetConnectionState(int connectionId)
         {
-            ulong transportId = ClientIdToTransportId(connectionId);
-            return ParseClientId(transportId).GetState(m_Driver) == NetworkConnection.State.Connected
-                ? RemoteConnectionState.Started
-                : RemoteConnectionState.Stopped;
+            if (m_TransportIdToClientIdMap.TryGetValue(connectionId, out ulong transportId))
+            {
+                return ParseClientId(transportId).GetState(m_Driver) == NetworkConnection.State.Connected
+                    ? RemoteConnectionState.Started
+                    : RemoteConnectionState.Stopped;
+            }
+            return RemoteConnectionState.Stopped;
         }
 
         public override void HandleClientConnectionState(ClientConnectionStateArgs connectionStateArgs)
@@ -1641,7 +1675,11 @@ namespace FishNet.Transporting.UTP
         {
             if (m_ServerState != LocalConnectionState.Started) return;
             
-            ulong transportId = ClientIdToTransportId(connectionId);
+            if (!m_TransportIdToClientIdMap.TryGetValue(connectionId, out ulong transportId))
+            {
+                return;
+            }
+            
             if (m_ClientState == LocalConnectionState.Started && transportId == m_ServerClientId)
             {
                 SendToClientHost(channelId, segment);
@@ -1656,7 +1694,7 @@ namespace FishNet.Transporting.UTP
 
         public override void SetMaximumClients(int value)
         {
-            if (m_ServerState == LocalConnectionState.Starting || m_ServerState == LocalConnectionState.Started)
+            if (m_ServerState.IsStartingOrStarted())
             {
                 NetworkManager.LogWarning("Cannot set maximum clients when server is running.");
             }
@@ -1708,8 +1746,11 @@ namespace FishNet.Transporting.UTP
 
         public override bool StopConnection(int connectionId, bool immediately)
         {
-            ulong transportId = ClientIdToTransportId(connectionId);
-            return transportId == m_ServerClientId ? StopClientHost() : DisconnectRemoteClient(transportId);
+            if (!m_TransportIdToClientIdMap.TryGetValue(connectionId, out ulong transportId))
+            {
+                return false;
+            }
+            return transportId == m_ServerClientId ? ServerRequestedStopClientHost() : DisconnectRemoteClient(transportId);
         }
 
         public override void Shutdown()
@@ -1780,20 +1821,24 @@ namespace FishNet.Transporting.UTP
 
         private void SetServerConnectionState(LocalConnectionState state)
         {
+            if (m_ServerState == state)
+            {
+                return;
+            }
             m_ServerState = state;
             HandleServerConnectionState(new ServerConnectionStateArgs(state, Index));
         }
 
         private bool StopServer()
         {
-            if (m_ServerState == LocalConnectionState.Stopping || m_ServerState == LocalConnectionState.Stopped)
+            if (m_ServerState.IsStoppingOrStopped())
             {
                 return false;
             }
 
-            if (m_ClientState == LocalConnectionState.Starting || m_ClientState == LocalConnectionState.Started)
+            if (m_ClientState.IsStartingOrStarted())
             {
-                StopClientHost();
+                ServerRequestedStopClientHost();
             }
 
             ulong[] connectedClients = m_ClientIdToTransportIdMap.Keys.ToArray();
@@ -1821,18 +1866,22 @@ namespace FishNet.Transporting.UTP
 
         private void SetClientConnectionState(LocalConnectionState state)
         {
+            if (m_ClientState == state)
+            {
+                return;
+            }
             m_ClientState = state;
             HandleClientConnectionState(new ClientConnectionStateArgs(state, Index));
         }
 
         private bool StopClient()
         {
-            if (m_ClientState == LocalConnectionState.Stopping || m_ClientState == LocalConnectionState.Stopped)
+            if (m_ClientState.IsStoppingOrStopped())
             {
                 return false;
             }
 
-            if (m_ServerState == LocalConnectionState.Starting || m_ServerState == LocalConnectionState.Started)
+            if (m_ServerState.IsStartingOrStarted())
             {
                 return StopClientHost();
             }
@@ -1844,18 +1893,18 @@ namespace FishNet.Transporting.UTP
 
         private readonly struct ClientHostSendData
         {
-            public byte[] Data { get; }
-            public int Length { get; }
-            public Channel Channel { get; }
+            public readonly Channel Channel;
+            public readonly ArraySegment<byte> Segment;
 
             public ClientHostSendData(Channel channel, ArraySegment<byte> data)
             {
                 if (data.Array == null) throw new InvalidOperationException();
-
-                Data = new byte[data.Count];
-                Length = data.Count;
-                Buffer.BlockCopy(data.Array, data.Offset, Data, 0, Length);
+                
                 Channel = channel;
+                
+                var array = new byte[data.Count];
+                Buffer.BlockCopy(data.Array, data.Offset, array, 0, data.Count);
+                Segment = new ArraySegment<byte>(array, 0, data.Count);
             }
         }
 
@@ -1863,47 +1912,38 @@ namespace FishNet.Transporting.UTP
         private Queue<ClientHostSendData> m_ClientHostSendQueue;
         private Queue<ClientHostSendData> m_ClientHostReceiveQueue;
 
-        private bool StartClientHost()
-        {
-            if (m_ClientState != LocalConnectionState.Stopped)
-            {
-                return false;
-            }
-
-            if (m_ServerState == LocalConnectionState.Started || m_ServerState == LocalConnectionState.Starting)
-            {
-                SetClientConnectionState(LocalConnectionState.Starting);
-                if (m_TransportIdToClientIdMap.Count >= GetMaximumClients())
-                {
-                    SetClientConnectionState(LocalConnectionState.Stopping);
-                    Debug.LogWarning("Connection limit reached. Server cannot accept new connections.");
-                    SetClientConnectionState(LocalConnectionState.Stopped);
-                    return false;
-                }
-                m_ServerClientId = k_ClientHostId;
-                HandleRemoteConnectionState(RemoteConnectionState.Started, m_ServerClientId);
-                SetClientConnectionState(LocalConnectionState.Started);
-                return true;
-            }
-            return false;
-        }
-
         private bool StopClientHost()
         {
-            if (m_ServerState == LocalConnectionState.Stopping || m_ServerState == LocalConnectionState.Stopped)
-            {
-                return false;
-            }
-
-            if (m_ClientState == LocalConnectionState.Stopping || m_ClientState == LocalConnectionState.Stopped)
+            if (m_ClientState.IsStoppingOrStopped())
             {
                 return false;
             }
 
             SetClientConnectionState(LocalConnectionState.Stopping);
-            HandleRemoteConnectionState(RemoteConnectionState.Stopped, m_ServerClientId);
             DisposeClientHost();
             SetClientConnectionState(LocalConnectionState.Stopped);
+            if (m_ServerState == LocalConnectionState.Started)
+            {
+                HandleRemoteConnectionState(RemoteConnectionState.Stopped, m_ServerClientId);
+            }
+
+            return true;
+        }
+
+        private bool ServerRequestedStopClientHost()
+        {
+            if (m_ClientState.IsStoppingOrStopped())
+            {
+                return false;
+            }
+
+            if (m_ServerState == LocalConnectionState.Started)
+            {
+                HandleRemoteConnectionState(RemoteConnectionState.Stopped, m_ServerClientId);
+                SetClientConnectionState(LocalConnectionState.Stopping);
+                DisposeClientHost();
+                SetClientConnectionState(LocalConnectionState.Stopped);
+            }
 
             return true;
         }
@@ -1925,9 +1965,8 @@ namespace FishNet.Transporting.UTP
                 while (m_ClientHostSendQueue != null && m_ClientHostSendQueue.Count > 0)
                 {
                     ClientHostSendData packet = m_ClientHostSendQueue.Dequeue();
-                    var segment = new ArraySegment<byte>(packet.Data, 0, packet.Length);
                     int connectionId = TransportIdToClientId(k_ClientHostId);
-                    HandleServerReceivedDataArgs(new ServerReceivedDataArgs(segment, packet.Channel, connectionId, Index));
+                    HandleServerReceivedDataArgs(new ServerReceivedDataArgs(packet.Segment, packet.Channel, connectionId, Index));
                 }
             }
             else
@@ -1935,9 +1974,7 @@ namespace FishNet.Transporting.UTP
                 while (m_ClientHostReceiveQueue != null && m_ClientHostReceiveQueue.Count > 0)
                 {
                     ClientHostSendData packet = m_ClientHostReceiveQueue.Dequeue();
-                    var segment = new ArraySegment<byte>(packet.Data, 0, packet.Length);
-                    HandleClientReceivedDataArgs(new ClientReceivedDataArgs(segment, packet.Channel, Index));
-                    ByteArrayPool.Store(packet.Data);
+                    HandleClientReceivedDataArgs(new ClientReceivedDataArgs(packet.Segment, packet.Channel, Index));
                 }
             }
         }
@@ -1951,7 +1988,8 @@ namespace FishNet.Transporting.UTP
 
         private void ClientHostSendToServer(int channelId, ArraySegment<byte> payload)
         {
-            m_ClientHostSendQueue ??= new Queue<ClientHostSendData>();
+            var maxCapacity = m_MaxSendQueueSize > 0 ? m_MaxSendQueueSize : m_DisconnectTimeoutMS * k_MaxReliableThroughput;
+            m_ClientHostSendQueue ??= new Queue<ClientHostSendData>(Math.Max(maxCapacity, m_MaxPayloadSize));
 
             m_ClientHostSendQueue.Enqueue(new ClientHostSendData((Channel)channelId, payload));
         }
