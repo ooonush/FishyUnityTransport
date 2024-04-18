@@ -1909,8 +1909,8 @@ namespace FishNet.Transporting.UTP
         }
 
         private const ulong k_ClientHostId = 0;
-        private Queue<ClientHostSendData> m_ClientHostSendQueue;
-        private Queue<ClientHostSendData> m_ClientHostReceiveQueue;
+        private readonly Queue<ClientHostSendData> m_ClientHostSendQueue = new Queue<ClientHostSendData>();
+        private readonly Queue<ClientHostSendData> m_ClientHostReceiveQueue = new Queue<ClientHostSendData>();
 
         private bool StopClientHost()
         {
@@ -1951,11 +1951,8 @@ namespace FishNet.Transporting.UTP
         private void DisposeClientHost()
         {
             m_ServerClientId = default;
-            m_ClientHostSendQueue?.Clear();
-            m_ClientHostReceiveQueue?.Clear();
-
-            m_ClientHostSendQueue = null;
-            m_ClientHostReceiveQueue = null;
+            m_ClientHostSendQueue.Clear();
+            m_ClientHostReceiveQueue.Clear();
         }
 
         private void IterateClientHost(bool asServer)
@@ -1981,16 +1978,11 @@ namespace FishNet.Transporting.UTP
 
         private void SendToClientHost(int channelId, ArraySegment<byte> payload)
         {
-            m_ClientHostReceiveQueue ??= new Queue<ClientHostSendData>();
-
             m_ClientHostReceiveQueue.Enqueue(new ClientHostSendData((Channel)channelId, payload));
         }
 
         private void ClientHostSendToServer(int channelId, ArraySegment<byte> payload)
         {
-            var maxCapacity = m_MaxSendQueueSize > 0 ? m_MaxSendQueueSize : m_DisconnectTimeoutMS * k_MaxReliableThroughput;
-            m_ClientHostSendQueue ??= new Queue<ClientHostSendData>(Math.Max(maxCapacity, m_MaxPayloadSize));
-
             m_ClientHostSendQueue.Enqueue(new ClientHostSendData((Channel)channelId, payload));
         }
 
