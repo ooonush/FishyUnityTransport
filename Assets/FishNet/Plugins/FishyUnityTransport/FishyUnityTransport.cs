@@ -1714,7 +1714,7 @@ namespace FishNet.Transporting.UTP
 
         #region Server
 
-        private LocalConnectionState m_ServerState;
+        private LocalConnectionState m_ServerState = LocalConnectionState.Stopped;
         private int m_NextClientId = 1;
         private readonly Dictionary<int, ulong> m_TransportIdToClientIdMap = new Dictionary<int, ulong>();
         private readonly Dictionary<ulong, int> m_ClientIdToTransportIdMap = new Dictionary<ulong, int>();
@@ -1784,7 +1784,7 @@ namespace FishNet.Transporting.UTP
 
         #region Client
 
-        private LocalConnectionState m_ClientState;
+        private LocalConnectionState m_ClientState = LocalConnectionState.Stopped;
 
         private void SetClientConnectionState(LocalConnectionState state)
         {
