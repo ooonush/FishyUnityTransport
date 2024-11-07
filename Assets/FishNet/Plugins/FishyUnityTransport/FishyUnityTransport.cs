@@ -3,6 +3,7 @@ using Networking = Unity.Networking;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using UnityEngine;
 using TransportNetworkEvent = Unity.Networking.Transport.NetworkEvent;
 using Unity.Burst;
@@ -141,11 +142,9 @@ namespace FishNet.Transporting.UTP
         [SerializeField]
         private ProtocolType m_ProtocolType;
 
+#if UTP_TRANSPORT_2_0_ABOVE
         [Tooltip("Per default the client/server will communicate over UDP. Set to true to communicate with WebSocket.")]
         [SerializeField]
-#if !UTP_TRANSPORT_2_0_ABOVE
-        [HideInInspector]
-#endif
         private bool m_UseWebSockets = false;
 
         public bool UseWebSockets
@@ -159,15 +158,13 @@ namespace FishNet.Transporting.UTP
         /// </summary>
         [Tooltip("Per default the client/server communication will not be encrypted. Select true to enable DTLS for UDP and TLS for Websocket.")]
         [SerializeField]
-#if !UTP_TRANSPORT_2_0_ABOVE
-        [HideInInspector]
-#endif
         private bool m_UseEncryption = false;
         public bool UseEncryption
         {
             get => m_UseEncryption;
             set => m_UseEncryption = value;
         }
+#endif
 
         [Tooltip("The maximum amount of packets that can be in the internal send/receive queues. Basically this is how many packets can be sent/received in a single update/frame.")]
         [SerializeField]
@@ -181,11 +178,12 @@ namespace FishNet.Transporting.UTP
             set => m_MaxPacketQueueSize = value;
         }
 
-        [Tooltip("The maximum size of an unreliable payload that can be handled by the transport.")]
+        [Tooltip("The maximum size of an unreliable payload that can be handled by the transport. The memory for MaxPayloadSize is allocated once per connection and is released when the connection is closed.")]
         [SerializeField]
         private int m_MaxPayloadSize = InitialMaxPayloadSize;
 
         /// <summary>The maximum size of an unreliable payload that can be handled by the transport.</summary>
+        /// <remarks>The memory for MaxPayloadSize is allocated once per connection and is released when the connection is closed.</remarks>
         public int MaxPayloadSize
         {
             get => m_MaxPayloadSize;
@@ -288,17 +286,23 @@ namespace FishNet.Transporting.UTP
             [SerializeField]
             public string ServerListenAddress;
 
-            private static NetworkEndpoint ParseNetworkEndpoint(string ip, ushort port, bool silent = false)
+            private static NetworkEndpoint ParseNetworkEndpoint(string address, ushort port, bool silent = false)
             {
                 NetworkEndpoint endpoint = default;
 
-                if (!NetworkEndpoint.TryParse(ip, port, out endpoint, NetworkFamily.Ipv4) &&
-                    !NetworkEndpoint.TryParse(ip, port, out endpoint, NetworkFamily.Ipv6))
+                if (!NetworkEndpoint.TryParse(address, port, out endpoint, NetworkFamily.Ipv4) &&
+                    !NetworkEndpoint.TryParse(address, port, out endpoint, NetworkFamily.Ipv6))
                 {
-                    if (!silent)
+                    IPAddress[] ipList = Dns.GetHostAddresses(address);
+                    if (ipList.Length > 0)
                     {
-                        Debug.LogError($"Invalid network endpoint: {ip}:{port}.");
+                        endpoint = ParseNetworkEndpoint(ipList[0].ToString(), port, true);
                     }
+                }
+
+                if (endpoint == default && !silent)
+                {
+                    Debug.LogError($"Invalid network endpoint: {address}:{port}.");
                 }
 
                 return endpoint;
@@ -381,6 +385,7 @@ namespace FishNet.Transporting.UTP
         /// - packet jitter (variances in latency, see: https://en.wikipedia.org/wiki/Jitter)
         /// - packet drop rate (packet loss)
         /// </summary>
+
 #if UTP_TRANSPORT_2_0_ABOVE
         [HideInInspector]
         [Obsolete("DebugSimulator is no longer supported and has no effect. Use Network Simulator from the Multiplayer Tools package.", false)]
@@ -400,6 +405,9 @@ namespace FishNet.Transporting.UTP
         private NetworkPipeline m_UnreliableSequencedFragmentedPipeline;
         private NetworkPipeline m_ReliableSequencedPipeline;
 
+        /// <summary>
+        /// The current ProtocolType used by the transport
+        /// </summary>
         public ProtocolType Protocol => m_ProtocolType;
 
         private RelayServerData m_RelayServerData;
@@ -635,9 +643,11 @@ namespace FishNet.Transporting.UTP
         /// <param name="packetDelay">Packet delay in milliseconds.</param>
         /// <param name="packetJitter">Packet jitter in milliseconds.</param>
         /// <param name="dropRate">Packet drop percentage.</param>
+
 #if UTP_TRANSPORT_2_0_ABOVE
         [Obsolete("SetDebugSimulatorParameters is no longer supported and has no effect. Use Network Simulator from the Multiplayer Tools package.", false)]
 #endif
+
         public void SetDebugSimulatorParameters(int packetDelay, int packetJitter, int dropRate)
         {
             if (m_Driver.IsCreated)
@@ -753,6 +763,7 @@ namespace FishNet.Transporting.UTP
 
             HandleRemoteConnectionState(RemoteConnectionState.Started, ParseClientId(connection));
             return true;
+
         }
 
         private void ReceiveMessages(ulong clientId, NetworkPipeline pipeline, DataStreamReader dataReader)
@@ -823,6 +834,10 @@ namespace FishNet.Transporting.UTP
                         }
                         else
                         {
+                            if (m_ClientState == LocalConnectionState.Starting)
+                            {
+                                Debug.LogError("Failed to connect to server.");
+                            }
                             SetClientConnectionState(LocalConnectionState.Stopping);
                             DisposeInternals();
                             SetClientConnectionState(LocalConnectionState.Stopped);
@@ -877,6 +892,11 @@ namespace FishNet.Transporting.UTP
                     ;
                 }
             }
+        }
+
+        private void OnDestroy()
+        {
+            Shutdown();
         }
 
         private int ExtractRtt(NetworkConnection networkConnection)
@@ -1157,7 +1177,6 @@ namespace FishNet.Transporting.UTP
                 }
                 SetClientConnectionState(LocalConnectionState.Stopped);
             }
-
             return succeeded;
         }
 
@@ -1332,6 +1351,7 @@ namespace FishNet.Transporting.UTP
             ConfigureSimulatorForUtp1();
 #endif
             bool asServer = m_ServerState == LocalConnectionState.Starting;
+
             m_NetworkSettings.WithNetworkConfigParameters(
                 maxConnectAttempts: transport.m_MaxConnectAttempts,
                 connectTimeoutMS: transport.m_ConnectTimeoutMS,
@@ -1501,7 +1521,6 @@ namespace FishNet.Transporting.UTP
             );
         }
 #endif
-        
         // -------------- Utility Types -------------------------------------------------------------------------------
 
 
@@ -1547,11 +1566,6 @@ namespace FishNet.Transporting.UTP
         public override event Action<ServerConnectionStateArgs> OnServerConnectionState;
         public override event Action<RemoteConnectionStateArgs> OnRemoteConnectionState;
 
-        private void OnDestroy()
-        {
-            Shutdown();
-        }
-
         public override string GetConnectionAddress(int connectionId)
         {
             bool isServer = m_ServerState == LocalConnectionState.Started;
@@ -1584,7 +1598,7 @@ namespace FishNet.Transporting.UTP
             }
             return string.Empty;
             
-            NetworkEndPoint GetLocalEndPoint()
+            NetworkEndpoint GetLocalEndPoint()
             {
 #if UTP_TRANSPORT_2_0_ABOVE
             return m_Driver.GetLocalEndpoint();
