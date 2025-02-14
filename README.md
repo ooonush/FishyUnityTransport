@@ -11,8 +11,9 @@ The FishyUnityTransport library API is close to **[UnityTransport for NGO](https
 **If you want to support the developer, you can do so with [Donation Alerts](https://www.donationalerts.com/r/ooonush).**
 
 ## Setting Up
+
 1. Install Fish-Net from the **[official repo](https://github.com/FirstGearGames/FishNet/releases)** or **[Asset Store](https://assetstore.unity.com/packages/tools/network/fish-net-networking-evolved-207815)**.
-2. Install **[UnityTransport](https://docs-multiplayer.unity3d.com/transport/current/install)** package  (1.3.1 or newer).
+2. Install **[UnityTransport](https://docs-multiplayer.unity3d.com/transport/current/install)** package (1.3.1 or newer).
 3. Install `FishyUnityTransport` **[unitypackage](https://github.com/ooonush/FishyUnityTransport/releases)** from the release section or using the Git URL:
    ```
    https://github.com/ooonush/FishyUnityTransport.git?path=Assets/FishNet/Plugins/FishyUnityTransport
@@ -28,6 +29,7 @@ For example, the device's firewall may prohibit these kinds of connections becau
 Instead, use Unity Relay to successfully initiate a connection between multiple clients and a host.
 
 Many factors impact how you connect to the remote host. To connect to a remote host, use one of the following methods:
+
 - Perform a [NAT punchthrough](https://docs-multiplayer.unity3d.com/netcode/current/learn/listen-server-host-architecture/#option-c-nat-punchthrough): This advanced technique directly connects to the host computer, even if it's on another network.
 - Use a [Relay server](https://docs.unity.com/relay/en/manual/relay-servers): A Relay server exists on the internet with a public-facing IP that you and the host can access.
   After the client and the host connect to a relay server, they can send data to each other through the Relay server.
@@ -43,6 +45,7 @@ and since its API is similar to the `UnityTransport` for [NGO API](https://docs-
 ### Installation and configuration
 
 Use the Unity package manager to install the Relay package:
+
 - `com.unity.services.relay`
 
 You must first configure your Unity project for Unity before using Relay with FishNet.
@@ -53,6 +56,7 @@ Check out [Get started with Relay](https://docs.unity.com/ugs/en-us/manual/relay
 ### How to use Relay
 
 To access a Relay server, do the following:
+
 - As the host, request an allocation on the relay server.
 - As a client, use the [join code](https://docs.unity.com/relay/en/manual/join-codes) that the host creates to connect to the relay server. This code allows the host and clients to communicate through the Relay server without disclosing their IP addresses and ports directly.
 
@@ -81,7 +85,6 @@ string joinCode = await Unity.Services.Relay.RelayService.Instance.GetJoinCodeAs
 ```
 
 With those two calls, you now have your Relay allocation ready and the associated join code. Pass the allocation parameters to your host transport and send the join code (a simple string) over the Internet by the mean of your choice to your clients.
-
 
 Remember to [authenticate](https://docs.unity.com/relay/en/manual/authentication) your users before using SDK methods.
 The easiest way is the anonymous one (shown in the following code snippet), but you can use more advanced techniques.
@@ -119,6 +122,7 @@ When an allocation exists, you need to make all traffic that comes from FishNet 
 To do this, perform the following actions to pass the allocation parameters to FishyUnityTransport:
 
 1. Retrieve FishyUnityTransport from your `NetworkManager`:
+
 ```csharp
 //Retrieve the FishyUnityTransport used by the NetworkManager
 FishyUnityTransport transport = NetworkManager.TransportManager.GetTransport<FishyUnityTransport>();
@@ -241,8 +245,22 @@ unityTransport.SetRelayServerData(new RelayServerData(allocation, "wss"));
 unityTransport.UseWebSockets = true;
 ```
 
+**Note** that if using Unity Transport Package 2.4.0, the constructor for RelayServerData(Allocation alloc, string connectionType) does not exist anymore. Hence use below as a example to set the WSS connection type for WebGL builds.
+
+```csharp
+Allocation allocation = await RelayService.Instance.CreateAllocationAsync(maxPlayers);
+var unityTransport = _networkManager.TransortManager.GetTransport<FishyUnityTransport>();
+
+RelayServerData relayServerData = allocation.ToRelayServerData("wss"); //Note that it is important to use lowercase because the ToRelayServerData makes a comparison directly by lowercase.
+unityTransport.UseWebSockets = true;
+unityTransport.SetRelayServerData(relayServerData);
+```
+
+Keep in mind that when joining a player, the same logic follows where you use the JoinAllocation instead of the Allocation class to set the RelayServerData.
+
 ## Other Unity Services support
 
 In addition, `FishyUnityTransport` supports other Unity Services. You can explore them yourself and use them in your project:
+
 - [Unity Lobby](https://docs.unity.com/ugs/en-us/manual/lobby/manual/unity-lobby-service)
 - [Game Server Hosting (Multiplay)](https://docs.unity.com/ugs/en-us/manual/game-server-hosting/manual/welcome)
