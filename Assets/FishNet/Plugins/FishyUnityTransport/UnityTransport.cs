@@ -1602,8 +1602,9 @@ namespace FishNet.Transporting.UTP
             {
                 HandleRemoteConnectionState(RemoteConnectionState.Stopped, clientId);
             }
-            else
+            else if (m_ClientState == LocalConnectionState.Started)
             {
+                SetClientConnectionState(LocalConnectionState.Stopping);
                 ShutdownInternals();
                 SetClientConnectionState(LocalConnectionState.Stopped);
             }
